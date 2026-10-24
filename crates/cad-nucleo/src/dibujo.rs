@@ -617,6 +617,42 @@ mod pruebas {
     }
 
     #[test]
+    fn guarda_y_vuelve_a_abrir_un_dwg_con_lo_editado() {
+        let dir = std::env::temp_dir().join(format!("cad-nucleo-dwg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("prueba.dwg");
+        let mut d = Dibujo::nuevo();
+        let h = d
+            .editar("LINEA", |t| {
+                t.anadir_en(linea(0.0, 0.0, 3.0, 4.0), "A-MUROS")
+            })
+            .unwrap();
+        d.editar("MOVER", |t| {
+            t.cambiar(h, |e| {
+                e.translate(opencadcodec::Vector3::new(10.0, 0.0, 0.0))
+            })
+        });
+        d.guardar_como(&ruta).unwrap();
+        let d2 = Dibujo::abrir(&ruta).unwrap();
+        let l = d2
+            .doc
+            .model_space_entities()
+            .find_map(|e| match e {
+                EntityType::Line(l) => Some(l.clone()),
+                _ => None,
+            })
+            .expect("la linea vuelve");
+        assert_eq!(l.start.x, 10.0);
+        assert_eq!(l.common.layer, "A-MUROS");
+        // Y se puede seguir editando lo abierto.
+        let mut d2 = d2;
+        let hl = l.common.handle;
+        assert!(d2.editar("BORRAR", |t| t.quitar(hl)));
+        assert_eq!(d2.doc.model_space_entities().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn guarda_y_vuelve_a_abrir_un_dxf() {
         let dir = std::env::temp_dir().join(format!("cad-nucleo-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
