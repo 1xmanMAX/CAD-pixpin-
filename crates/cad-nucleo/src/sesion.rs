@@ -249,6 +249,19 @@ impl Sesion {
         (p, None)
     }
 
+    /// Si lo que se escriba va tal cual (un texto con espacios): entonces la
+    /// barra espaciadora no es Enter.
+    pub fn pide_texto(&self) -> bool {
+        self.activa == Some(Id::Texto)
+            && self.paso.puntos.len() == 1
+            && !self.paso.numeros.is_empty()
+    }
+
+    /// Lo que se puede decir en el historial desde fuera (guardado, errores…).
+    pub fn avisar(&mut self, s: impl Into<String>) {
+        self.decir(s);
+    }
+
     /// Si la orden esta pidiendo objetos (el recuadro elige en vez de ser un punto).
     pub fn pide_objetos(&self) -> bool {
         match self.activa {

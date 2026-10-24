@@ -160,6 +160,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadpixpin"
+version = "0.1.0"
+dependencies = [
+ "cad-nucleo",
+ "pixpin-bim",
+ "pixpin-cad",
+ "pixpin-render",
+ "pixpin-shell",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+]
+
+[[package]]
 name = "cfb"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
