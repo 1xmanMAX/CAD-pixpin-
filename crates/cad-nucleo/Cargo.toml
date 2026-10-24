@@ -1,0 +1,13 @@
+[package]
+name = "cad-nucleo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "El nucleo de edicion de CAD-pixpin: ordenes, enganches, deshacer y especialidades, sobre opencadcodec"
+
+[dependencies]
+# El mismo lector de OpenCADStudio que usa pixpin-cad (misma revision): lee
+# y ESCRIBE DWG y DXF, y trae mover, girar, escalar y simetria para todas las
+# entidades. Rust puro: este crate se prueba tambien fuera de Windows.
+opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac" }
