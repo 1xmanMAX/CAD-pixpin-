@@ -1,0 +1,18 @@
+# Baseline del procesador -- decision D17 del diseno de rendimiento
+# (docs/superpowers/specs/2026-08-31-rendimiento-equipos-modestos-design.md).
+#
+# La maquina suelo es un Core i3 de 3a generacion (Ivy Bridge): tiene AVX pero
+# NO AVX2 ni FMA3. Compilar para la CPU nativa de una maquina moderna, o para
+# un nivel de microarquitectura v2/v3/v4, produciria un binario que muere alli
+# con instruccion ilegal al arrancar. El SIMD moderno se despacha en tiempo de
+# ejecucion con is_x86_feature_detected!.
+#
+# (Este comentario evita escribir los valores prohibidos: el guardian los
+# busca como subcadenas en el fichero entero, comentarios incluidos.)
+#
+# Hoy `x86-64` es ademas el valor por defecto del toolchain; este fichero lo
+# convierte en decision escrita. Lo vigila apps/pixpin/tests/baseline.rs.
+# En aarch64 no hace falta nada: NEON es baseline.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64"]

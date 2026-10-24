@@ -1,0 +1,35 @@
+[package]
+name = "pixpin-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pixpin-geom = { version = "0.1.0", path = "../pixpin-geom" }
+pixpin-nivel = { version = "0.1.0", path = "../pixpin-nivel" }
+# Atajos, entorno y uniones: la parte portable, que tambien usan los crates
+# de logica sin arrastrar Win32.
+pixpin-sistema = { version = "0.1.0", path = "../pixpin-sistema" }
+serde = { version = "1.0.229", features = ["derive"] }
+# Los pedidos de otros programas (`mensajero::validar_pedido`) llegan en JSON
+# y se miran por encima antes de contestar.
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+# Los enlaces `pixpin://` que hace la propia app (los botones de sus avisos)
+# van firmados con una clave del equipo (`orden::firma`): HMAC-SHA256, con
+# las mismas versiones que ya usa pixpin-sincro.
+hmac = "0.12.1"
+sha2 = "0.10.9"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_UI_Controls_Dialogs", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Globalization", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_DataExchange", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Controls", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_Graphics_Dxgi", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_Graphics_DirectManipulation", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_HiDpi", "Win32_UI_Input_Ime", "Win32_System_Ole", "Win32_System_Variant", "Win32_Security_Cryptography", "Win32_NetworkManagement_Dns", "Win32_Networking_WinHttp", "Win32_System_WinRT", "Win32_System_Console", "ApplicationModel", "ApplicationModel_Activation", "ApplicationModel_DataTransfer", "ApplicationModel_DataTransfer_ShareTarget", "Win32_Storage_Packaging_Appx", "Storage", "Storage_Streams", "Foundation", "Foundation_Collections", "Media", "UI_Notifications", "Data_Xml_Dom"] }
+# `IIterable` de WinRT para darle ficheros al panel Compartir (`compartir.rs`):
+# el crate `windows` lo usa pero no lo reexporta.
+windows-collections = "0.3.2"
+# `#[implement]` (el manejador de DirectManipulation, `gestos_tactiles.rs`)
+# expande a `windows_core::...`: el crate tiene que estar por su nombre.
+windows-core = "0.62.2"
+
+[dev-dependencies]
+# El ejemplo `vista_previa` escribe lo que registra el hilo «office».
+tracing-subscriber = "0.3.23"

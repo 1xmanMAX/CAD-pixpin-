@@ -1,0 +1,50 @@
+[package]
+name = "pixpin-cad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Lee DWG (R13 a 2018+) y DXF. MPL-2.0: se usa tal cual, como dependencia;
+# sus ficheros siguen siendo MPL. Es la libreria de OpenCADStudio
+# (github.com/HakanSeven12/OpenCADStudio), el visor que el usuario pidio
+# como guia; la aplicacion en si es GPL y de ella no se copia codigo.
+opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac" }
+# Rellenar sombreados y letras (MIT/Apache).
+lyon_tessellation = "1.0"
+# El contorno de las letras de las fuentes de Windows (MIT/Apache).
+ttf-parser = "0.25"
+tracing = "0.1"
+# Los errores de `trayecto_svg` (copia del de pixpin-render).
+thiserror = "2.0.20"
+# Leer el croquis 3D del movil (`croquis3d/<id>.croquis.gz`): JSON en gzip.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+flate2 = "1.1"
+# Solo con el rasgo `pintar-png` (las pruebas de la app).
+png = { version = "0.18", optional = true }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Controls",
+    "Win32_System_Registry",
+] }
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
+png = "0.18"
+
+[features]
+# El rasterizador de las pruebas (`pruebas_png`) para las pruebas de la app.
+pintar-png = ["dep:png"]

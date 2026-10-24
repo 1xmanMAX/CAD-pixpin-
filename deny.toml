@@ -1,0 +1,55 @@
+# Puerta de licencias. Protege la decision D2/D3 del documento maestro:
+# PixPin Max es MIT y no puede heredar copyleft de ninguna dependencia.
+# QuickView (GPL-3.0) es referencia de tecnicas, nunca de codigo.
+
+[licenses]
+# Solo licencias permisivas compatibles con MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+# jpeg-encoder (lo trae pdfsqueeze-core para recodificar las fotos de los
+# PDF) es «(MIT OR Apache-2.0) AND IJG»: parte de su codigo viene de la
+# libjpeg del Independent JPEG Group. La licencia IJG es permisiva; solo pide
+# decir en la documentacion que el programa se basa en parte en su trabajo
+# (ver crates/pdfsqueeze-core/PROCEDENCIA.md). Se permite solo para este
+# crate, no en general.
+exceptions = [
+    { allow = ["IJG"], crate = "jpeg-encoder" },
+]
+
+[bans]
+# Cualquier copyleft fuerte es un fallo de build, no un aviso.
+deny = []
+multiple-versions = "warn"
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # ttf-parser lo trae lopdf 0.42 (pdfsqueeze-core). No es un fallo, es que
+    # su autor lo dejo. La alternativa era quedarse en lopdf 0.36, que tiene un
+    # fallo de verdad (RUSTSEC-2026-0187, un PDF que aborta el proceso). Y lopdf
+    # corre en el ejecutable aparte del compresor (`pixpin-aligerar.exe`),
+    # nunca en el de la aplicacion.
+    { id = "RUSTSEC-2026-0192", reason = "sin mantener, no vulnerable; lo trae lopdf 0.42, que arregla RUSTSEC-2026-0187" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Los dos lectores que aun no estan en crates.io, cada uno fijado a un commit
+# (`rev`) en su Cargo.toml: los planos DWG (pixpin-cad, MPL-2.0) y los
+# modelos de Revit (pixpin-bim, Apache-2.0). Solo esos dos repositorios.
+allow-git = [
+    "https://github.com/HakanSeven12/opencadcodec.git",
+    "https://github.com/DrunkOnJava/rvt-rs",
+]

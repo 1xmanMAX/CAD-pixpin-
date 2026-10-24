@@ -1,0 +1,47 @@
+# Rust
+/target/
+/apple/target/
+/apple/target-enlaces/
+**/*.rs.bk
+*.pdb
+
+# Cargo: se versiona Cargo.lock porque esto produce un binario, no una libreria
+# (ver https://doc.rust-lang.org/cargo/faq.html)
+
+# Shaders compilados
+*.cso
+*.dxil
+
+# Windows
+Thumbs.db
+desktop.ini
+*.suo
+*.user
+.vs/
+
+# Editores
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+
+# Salidas de build e instalador
+/dist/
+/installer/out/
+
+# Repos de referencia clonados para consulta (nunca se versionan:
+# QuickView es GPL-3.0 y ajeno, ver el documento maestro)
+/reference/
+
+# Espacio de trabajo de la ejecucion por subagentes (borradores, informes)
+/.superpowers/
+
+# Material de referencia de terceros: no se distribuye con el proyecto.
+proyectos de referencia/
+
+# Restos de ediciones y de la consola
+*.tmp
+*.nuevo
+*.stackdump
+*.stackdump

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Max Anthony Mamani Maquera"]
+repository = "https://github.com/1xmanMAX/CAD-pixpin-"
+
+[workspace.dependencies]
+# Copiados tal cual de PIXPIN_PRO_WINDOWS (ver crates/LEEME.md): el visor de
+# planos y modelos, el motor del lienzo con el que se anota y lo que ellos
+# necesitan para compilar.
+pixpin-geom = { path = "crates/pixpin-geom" }
+pixpin-nivel = { path = "crates/pixpin-nivel" }
+pixpin-sistema = { path = "crates/pixpin-sistema" }
+pixpin-shell = { path = "crates/pixpin-shell" }
+pixpin-motor2d = { path = "crates/pixpin-motor2d" }
+pixpin-tinta = { path = "crates/pixpin-tinta" }
+pixpin-codec = { path = "crates/pixpin-codec" }
+pixpin-docs = { path = "crates/pixpin-docs" }
+pixpin-hojas = { path = "crates/pixpin-hojas" }
+pixpin-office = { path = "crates/pixpin-office" }
+pixpin-pdf = { path = "crates/pixpin-pdf" }
+pixpin-render = { path = "crates/pixpin-render" }
+pixpin-ui = { path = "crates/pixpin-ui" }
+pixpin-cad = { path = "crates/pixpin-cad" }
+pixpin-bim = { path = "crates/pixpin-bim" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+# Leer un DWG o un IFC grande sin optimizar tarda demasiado en las pruebas.
+[profile.dev.package.opencadcodec]
+opt-level = 2
+[profile.dev.package.miniz_oxide]
+opt-level = 3

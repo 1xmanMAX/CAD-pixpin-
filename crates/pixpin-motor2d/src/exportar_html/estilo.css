@@ -1,0 +1,282 @@
+:root{--tinta:#1c1c1e;--vidrio:rgba(255,255,255,.86);--filete:rgba(0,0,0,.1);
+  --fusion:multiply}
+body.oscuro{--tinta:#f2f2f2;--vidrio:rgba(30,30,32,.82);--filete:rgba(255,255,255,.12);
+  --fusion:screen}
+html,body{margin:0;height:100%;background:FONDO;color:var(--tinta);
+  font:14px/1.3 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-tap-highlight-color:transparent}
+/* **Todo lo que ata la página a la ventana cuelga de `html.vivo`**, y el guion se
+   pone esa clase al arrancar. Sin guion —hay visores dentro de otras aplicaciones
+   que abren un HTML con el guion apagado, y ahí se abren muchos de los que se
+   mandan por mensajería— la página se queda como estaba: `overflow:hidden` y
+   `touch-action:none` sobre el dibujo dejaban una lámina a pantalla completa **sin
+   zoom, sin desplazamiento y sin nada que tocar**. Es justo lo que reportó el
+   usuario el 8-sep-2026 al abrir uno reenviado. Así, sin guion, al menos queda un
+   documento que se amplía con dos dedos y se pasea, que es lo que hace el navegador
+   solo cuando se le deja. */
+html.vivo,html.vivo body{overflow:hidden;overscroll-behavior:none}
+#lienzo{position:fixed;inset:0}
+.hoja{position:absolute;inset:0}
+.hoja[hidden]{display:none}
+/* Solo el SVG de la hoja, no los que lleva dentro: un sublienzo es un `<svg>` anidado con su
+   propio tamaño, y con `#lienzo svg` algunos navegadores lo estiraban a toda la hoja. */
+#lienzo .hoja>svg{width:100%;height:100%;display:block;
+  user-select:none;-webkit-user-select:none}
+html.vivo #lienzo svg{touch-action:none;cursor:grab}
+/* **Lo que va dentro de un documento se desplaza con el dedo** (Android v0.98.1,
+   30-sep-2026). Las hojas de un PDF van como SVG y la regla de arriba, que es para
+   el dibujo, les quitaba el desplazamiento: en una pantalla tactil solo se movia
+   tocando los margenes. */
+html.vivo #lienzo .doc svg{touch-action:auto;cursor:auto}
+.hoja[data-tipo=nota]{overflow:auto;-webkit-overflow-scrolling:touch;position:absolute}
+/* La capa donde se raya, encima del texto y del alto que tenga la nota. No recibe el
+   dedo salvo con lápiz o resaltador en la mano: así el texto se sigue pudiendo
+   seleccionar y los enlaces se siguen pudiendo tocar. */
+.tinta{position:absolute;left:0;top:0;width:100%;pointer-events:none;overflow:visible}
+#lienzo.pintando .tinta{pointer-events:auto;touch-action:none;cursor:crosshair}
+/* Un documento para anotar: la columna y sus márgenes. Ver [HojaWeb.Documento]. */
+.doc-caja{position:relative;margin:0 auto;padding-bottom:140px;transform-origin:0 0}
+.doc{box-sizing:border-box;overflow-wrap:break-word}
+.doc-caja .ppa{position:absolute;pointer-events:none;overflow:visible;z-index:1;width:auto;height:auto}
+.doc-caja .ppm{position:absolute;z-index:2;font-size:20px;line-height:1;transform:translateY(-4px)}
+.doc-caja .tinta{z-index:3;height:100%}
+.pprail{position:fixed;right:6px;top:50%;transform:translateY(-50%);z-index:4;display:flex;flex-direction:column;gap:6px;
+  padding:6px 4px;border-radius:16px;background:var(--vidrio);border:1px solid var(--filete)}
+.pprail button{all:unset;cursor:pointer;font-size:18px;line-height:1;padding:3px;text-align:center}
+html.presentando .pprail{display:none}
+.nota{max-width:44rem;margin:0 auto;padding:28px 20px 140px;line-height:1.65;
+  font-size:16px;word-wrap:break-word}
+.nota h1,.nota h2,.nota h3,.nota h4,.nota h5,.nota h6{line-height:1.25;margin:1.4em 0 .5em}
+.nota h1{font-size:1.7em}.nota h2{font-size:1.4em}.nota h3{font-size:1.2em}
+.nota p{margin:.7em 0}
+.nota blockquote{margin:.8em 0;padding:.2em 0 .2em 1em;border-left:3px solid var(--filete);opacity:.86}
+.nota pre{background:var(--filete);padding:12px 14px;border-radius:10px;overflow:auto}
+.nota code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+.nota pre code{font-size:.88em}
+.nota hr{border:none;border-top:1px solid var(--filete);margin:1.6em 0}
+.nota table{border-collapse:collapse;margin:1em 0;width:100%}
+.nota th,.nota td{border:1px solid var(--filete);padding:6px 10px;text-align:left;
+  min-width:3em;white-space:pre-wrap;vertical-align:top}
+/* Una celda vacía sigue siendo una celda: sin esto se aplasta y la tabla sale
+   «comprimida», que fue lo que reportó el usuario. */
+.nota td:empty::after,.nota th:empty::after{content:"\00a0"}
+.nota figure{margin:1em 0;text-align:center}
+.nota figure img{max-width:100%;height:auto;border-radius:8px}
+.nota figure audio{width:100%;max-width:520px}
+.nota .salto{color:#1e88e5;font-weight:600;text-decoration:none;cursor:pointer;margin-right:.4em}
+.nota .adjunto{display:inline-block;padding:8px 12px;border:1px solid #1e88e5;border-radius:10px;color:#1e88e5;text-decoration:none}
+.nota figcaption{opacity:.7;font-size:.9em;margin-top:.4em}
+.nota caption{caption-side:top;opacity:.7;padding-bottom:6px;font-size:.9em}
+.nota ul.tareas{list-style:none;padding-left:1.1em}
+.nota .medio{opacity:.6;font-style:italic}
+.nota .destacado{border:1px solid var(--filete);border-radius:12px;padding:10px 14px;margin:1em 0}
+.nota .centro{text-align:center}.nota .derecha{text-align:right}
+.nota .pie{opacity:.7;font-size:.9em}
+.nota .tapado{background:currentColor;border-radius:3px}
+.nota .tapado:hover,.nota .tapado:focus{background:transparent}
+.nota a{color:inherit}
+canvas.espacio{position:absolute;inset:0;display:block}
+html.vivo canvas.espacio{touch-action:none;cursor:grab}
+/* La portada del croquis, encima hasta el primer fotograma. Ver VisorEspacio. */
+img.portada{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+  pointer-events:none;transition:opacity .3s;z-index:2}
+#guia-caja{position:fixed;inset:0;z-index:8;background:rgba(0,0,0,.45);display:flex;
+  align-items:center;justify-content:center;padding:16px}
+.guia{width:min(360px,100%);max-height:86vh;overflow:auto;padding:14px 16px;border-radius:18px;
+  background:var(--vidrio);border:1px solid var(--filete);box-shadow:0 12px 40px rgba(0,0,0,.3);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.guia h2{margin:0 0 6px;font-size:16px}
+.guia h3{margin:12px 0 4px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;opacity:.6}
+.guia .par{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
+  border-bottom:1px solid var(--filete);font-size:14px}
+.guia .par span:last-child{opacity:.75;text-align:right}
+.guia .cerrar{margin-top:14px;width:100%;padding:10px;border:none;border-radius:12px;
+  background:#e03131;color:#fff;font:inherit;cursor:pointer}
+/* El plano vectorial va debajo del SVG y no recibe el dedo: el que manda sigue siendo
+   el SVG, que es donde se raya. Sin el `z-index` el lienzo, que va posicionado, se
+   pintaría por encima del SVG, que no lo va. */
+/* El lienzo del plano es **más grande que la ventana** y sobresale por los cuatro
+   lados: así, al mover, lo que asoma ya está pintado. Su sitio y su tamaño los pone
+   el visor. Ver [VisorPlano]. */
+canvas.plano{position:absolute;left:0;top:0;display:block;pointer-events:none;z-index:0}
+/* La raya mientras se escribe, encima de todo y sin coger el dedo. Ver la tinta viva. */
+canvas.tinta-viva{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3}
+.hoja{overflow:hidden}
+.hoja[data-plano] svg{position:relative;z-index:1}
+#lienzo.agarrado svg,#lienzo.agarrado canvas.espacio{cursor:grabbing}
+#lienzo.pintando svg{cursor:crosshair}
+#lienzo.midiendo canvas.espacio,#lienzo.midiendo svg{cursor:crosshair}
+/* El resaltador se funde multiplicando, que sobre papel claro es lo que hace un
+   rotulador: el texto sigue negro y el fondo se tiñe. Sobre pizarra multiplicar lo
+   apaga todo, y ahí lo que tiñe es sumar luz. Va con el tema de la página. */
+.marca{mix-blend-mode:var(--fusion)}
+#pizarra{position:fixed;left:0;right:0;bottom:0;display:flex;flex-direction:column;
+  align-items:center;gap:10px;padding:0 10px calc(12px + env(safe-area-inset-bottom));
+  pointer-events:none;z-index:5}
+#pizarra>*{pointer-events:auto}
+#barra{display:flex;gap:6px;padding:6px;border-radius:16px;background:var(--vidrio);
+  border:1px solid var(--filete);box-shadow:0 6px 24px rgba(0,0,0,.18);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  flex-wrap:wrap;justify-content:center;max-width:100%}
+.grupo{display:flex;gap:2px}
+.grupo[hidden]{display:none}
+/* **La cota.** Naranja para que no se confunda con el dibujo, y con el grosor y la
+   letra medidos en pantalla (`non-scaling-stroke`) para que se lean igual de cerca que
+   de lejos. La cifra lleva un reborde del color del papel: sobre un plano lleno de
+   líneas, un número sin reborde no se lee. */
+#medida{pointer-events:none}
+#medida line{stroke:#ff8a3d;stroke-width:2px;vector-effect:non-scaling-stroke}
+#medida path{fill:#ff8a3d;stroke:none}
+#medida .pendiente{fill:none;stroke:#ff8a3d;stroke-width:2px;vector-effect:non-scaling-stroke}
+#medida text{fill:#ff8a3d;text-anchor:middle;paint-order:stroke;
+  stroke:var(--papel,#fff);stroke-width:4px;vector-effect:non-scaling-stroke;
+  font-weight:600;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#medida .viva line{stroke:#ff5722;stroke-width:3px}
+#medida .viva text{fill:#ff5722}
+.grupo+.grupo{border-left:1px solid var(--filete);padding-left:6px;margin-left:2px}
+#barra button,#arriba button{width:40px;height:40px;border:none;border-radius:11px;background:transparent;
+  color:inherit;display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;touch-action:manipulation;padding:0}
+#barra button:hover,#arriba button:hover{background:var(--filete)}
+#barra button:active,#arriba button:active{transform:scale(.93)}
+#barra button.activo,#arriba button.activo{background:#e03131;color:#fff}
+#barra button:disabled,#arriba button:disabled{opacity:.35;cursor:default}
+/* Los botones del zoom sobran con rueda, pero en el espacio y con el dedo son la
+   única forma de acercarse sin usar las dos manos. */
+@media (pointer:coarse){
+  .solo-raton{display:none}
+  body.enElEspacio #mas,body.enElEspacio #menos{display:inline-flex}
+}
+/* **Color y grosor en la misma línea** (16-sep-2026, pedido del usuario): el grosor
+   estaba en una fila debajo, y son dos mitades de la misma decisión —con qué pinto—.
+   En una pantalla estrecha la fila se parte sola, que es lo que hace `wrap`. */
+#paleta{display:flex;flex-direction:row;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center}
+/* Sin esto la paleta se ve siempre: `#paleta{display:flex}` pesa más que el
+   `[hidden]{display:none}` del navegador y lo tapa. */
+#paleta[hidden]{display:none}
+#colores,#grosores{display:flex;gap:6px;padding:6px;border-radius:14px;
+  background:var(--vidrio);border:1px solid var(--filete);box-shadow:0 6px 24px rgba(0,0,0,.18);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);flex-wrap:wrap;
+  justify-content:center;max-width:100%}
+#paleta button{width:30px;height:30px;border:2px solid rgba(255,255,255,.75);
+  border-radius:50%;padding:0;cursor:pointer;box-shadow:0 0 0 1px rgba(0,0,0,.3);
+  touch-action:manipulation;background:var(--c,#fff)}
+#paleta button.activo{border-color:#fff;box-shadow:0 0 0 3px #e03131}
+#grosores button{background:#fff;display:inline-flex;align-items:center;justify-content:center}
+#grosores button i{display:block;border-radius:50%;background:#222}
+#aviso{position:fixed;left:50%;top:18px;transform:translateX(-50%);padding:8px 14px;
+  border-radius:10px;background:var(--vidrio);border:1px solid var(--filete);
+  box-shadow:0 6px 24px rgba(0,0,0,.18);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#estado{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(74px + env(safe-area-inset-bottom));padding:6px 12px;border-radius:999px;
+  background:var(--vidrio);border:1px solid var(--filete);font-variant-numeric:tabular-nums;z-index:4;
+  white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#estado:empty{display:none}
+#cajon{position:fixed;top:12px;right:12px;width:252px;max-height:70vh;overflow:auto;
+  padding:8px;border-radius:16px;background:var(--vidrio);border:1px solid var(--filete);z-index:6;
+  box-shadow:0 6px 24px rgba(0,0,0,.18);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#cajon[hidden]{display:none}
+#cajon h2{margin:2px 6px 8px;font-size:11px;letter-spacing:.09em;
+  text-transform:uppercase;opacity:.6}
+.fila{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:10px;cursor:pointer}
+.fila:hover{background:var(--filete)}
+.fila.activo{background:#e03131;color:#fff}
+.fila input{accent-color:#e03131;width:16px;height:16px;flex:none}
+.fila .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fila .lupa{opacity:.55;flex:none;padding:0 4px}
+.mini{display:flex;gap:6px;padding:6px 6px 2px}
+.mini button{flex:1;padding:7px 10px;border-radius:9px;border:1px solid var(--filete);
+  background:transparent;color:inherit;cursor:pointer;font:inherit}
+.mini button:hover{background:var(--filete)}
+/* **Arriba a la derecha**: presentar, marcar una zona e imprimir. Ver [barra]. */
+/* Mismo cristal, mismo filete, mismos botones que la barra de abajo: son la misma
+   interfaz en dos sitios, y con dos pintas distintas parecen dos aplicaciones
+   (lo dijo el usuario el 16-sep-2026). */
+#arriba{position:fixed;top:calc(12px + env(safe-area-inset-top));right:12px;z-index:6;display:flex;gap:6px;
+  padding:6px;border-radius:16px;background:var(--vidrio);border:1px solid var(--filete);
+  box-shadow:0 6px 24px rgba(0,0,0,.18);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  color:var(--tinta)}
+/* Mientras se marca la zona a imprimir: el dedo marca, no dibuja. */
+html.marcando #lienzo{cursor:crosshair}
+#zona-marca{position:fixed;z-index:7;border:2px dashed var(--tinta,#3b82f6);
+  background:rgba(59,130,246,.12);pointer-events:none;border-radius:4px}
+#indice-fijo{position:fixed;top:12px;left:12px;z-index:5;max-width:240px;max-height:70vh;overflow:auto;
+  padding:4px 6px;border-radius:14px;background:var(--vidrio);border:1px solid var(--filete);
+  box-shadow:0 6px 24px rgba(0,0,0,.12);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#indice-fijo summary{cursor:pointer;font-weight:600;padding:6px 8px;list-style:none;white-space:nowrap;
+  display:flex;align-items:center;gap:10px;max-width:228px}
+#indice-fijo summary .titulo{overflow:hidden;text-overflow:ellipsis}
+#indice-fijo summary .cuenta{opacity:.55;font-weight:500;font-size:12px;flex:none}
+#indice-fijo summary::after{content:"▾";opacity:.6;flex:none}
+#indice-fijo[open] summary::after{content:"▴"}
+#indice-fijo summary::-webkit-details-marker{display:none}
+#indice-fijo a{display:block;padding:6px 8px;border-radius:9px;color:inherit;text-decoration:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#indice-fijo a b{opacity:.5;font-weight:600;margin-right:4px}
+#indice-fijo a:hover{background:var(--filete)}
+#indice-fijo a.activo{background:#e03131;color:#fff}
+#indice-fijo a.activo b{opacity:.8}
+#pizarra:not(.varias) #anterior,#pizarra:not(.varias) #indice,
+#pizarra:not(.varias) #siguiente{display:none}
+@media (max-width:600px){
+  #cajon{top:auto;left:8px;right:8px;width:auto;max-height:52vh;
+    bottom:calc(116px + env(safe-area-inset-bottom))}
+}
+@media (min-width:900px){#barra button,#arriba button{width:38px;height:38px}}
+/* **Presentar**: solo la hoja y la pastilla. */
+#presentacion{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));
+  transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:2px;padding:4px 6px;
+  border-radius:24px;background:rgba(0,0,0,.66);color:#fff;transition:opacity .2s}
+#presentacion[hidden]{display:none}
+#presentacion.escondida{opacity:0;pointer-events:none}
+#presentacion button{width:40px;height:40px;border:none;border-radius:20px;background:transparent;
+  color:#fff;display:grid;place-items:center;cursor:pointer;padding:0}
+#presentacion button svg{width:22px;height:22px}
+#presentacion button.activo{background:rgba(255,255,255,.28)}
+#presentacion button:disabled{opacity:.35}
+#p-cuenta{font-size:14px;min-width:52px;text-align:center}
+.p-sep{width:1px;height:22px;background:rgba(255,255,255,.3);margin:0 4px}
+/* **Presentando, nada de desenfoque de fondo.**
+   En pantalla completa, Chromium —y con él Brave, que es donde lo vio el usuario el
+   16-sep-2026— compone mal las capas con `backdrop-filter`: al aparecer o desaparecer
+   una (la paleta, que se va al coger el borrador) **pinta negro toda la pantalla** y el
+   dibujo deja de verse hasta salir. El desenfoque es un adorno; el dibujo, no. Se
+   cambia por un fondo sólido, que además se lee mejor sobre una diapositiva. */
+html.presentando #colores,html.presentando #grosores{
+  backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
+  background:rgba(0,0,0,.72)!important;color:#fff;border-color:rgba(255,255,255,.18)!important}
+html.presentando #arriba,
+html.presentando #barra,html.presentando #pizarra>*:not(#presentacion):not(#paleta),html.presentando #indice-fijo,
+  html.presentando #estado,html.presentando #cajon,html.presentando #aviso{display:none!important}
+#impresion{display:none}
+html.presentando .marcos{display:none}
+#elegir-marcos{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)}
+#elegir-marcos .caja{background:var(--vidrio);color:var(--tinta);border:1px solid var(--filete);border-radius:18px;
+  padding:16px 18px;min-width:240px;max-width:88vw;max-height:80vh;overflow:auto;
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);font:15px system-ui,sans-serif}
+#elegir-marcos label{display:flex;gap:10px;align-items:center;padding:7px 0;cursor:pointer}
+#elegir-marcos .fila{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+#elegir-marcos button{all:unset;cursor:pointer;padding:8px 14px;border-radius:12px;border:1px solid var(--filete)}
+#elegir-marcos button[data-a=si]{background:#e53935;color:#fff;border-color:#e53935}
+/* **Imprimir**: una hoja por página, sin mandos. */
+@media print{
+  @page{margin:10mm}
+  html.vivo,html.vivo body,html,body{overflow:visible!important;height:auto!important;background:#fff!important}
+  #barra,#pizarra,#estado,#cajon,#indice-fijo,#paleta,#aviso,#presentacion,#arriba,#zona-marca{display:none!important}
+  #lienzo{position:static!important}
+  .hoja,.hoja[hidden]{position:relative!important;display:block!important;inset:auto!important;
+    width:100%!important;height:auto!important;page-break-after:always;break-after:page;overflow:visible!important}
+  #lienzo .hoja>svg{width:100%!important;height:auto!important;max-height:95vh}
+  html.imprimir-una .hoja:not(.a-imprimir){display:none!important}
+  /* Marco a marco: cada uno, una página. Ver `imprimirMarcos`. */
+  html.imprimir-marcos #lienzo{display:none!important}
+  html.imprimir-marcos #impresion{display:block!important}
+  #impresion .pagina{page-break-after:always;break-after:page}
+  #impresion .pagina:last-child{page-break-after:auto;break-after:auto}
+  #impresion svg{width:100%!important;height:auto!important;max-height:95vh;display:block}
+  .marcos,#elegir-marcos{display:none!important}
+  .hoja:last-child{page-break-after:auto;break-after:auto}
+}

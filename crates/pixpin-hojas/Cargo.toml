@@ -1,0 +1,19 @@
+[package]
+name = "pixpin-hojas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Un `.xlsx` es un ZIP con XML dentro: el mismo lector de ZIP que ya usan
+# `pixpin-docs` y `pixpin-proyecto`, con la misma version y solo `deflate`.
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# Descomprimir la hoja POCO A POCO (y no entera de golpe) para pintar la
+# primera pantalla antes de leer las cien mil filas: el mismo flate2 que el
+# ZIP ya trae dentro, sin dependencia nueva en el arbol.
+# Con zlib-rs (ya en el arbol: Cargo.lock lo trae por flate2): descomprime
+# cerca del doble de rapido que miniz_oxide, y una hoja de 100 000 filas son
+# 70 MB de XML.
+flate2 = { version = "1.1", features = ["zlib-rs"] }
+thiserror = "2.0"

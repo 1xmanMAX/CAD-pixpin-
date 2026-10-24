@@ -1,0 +1,14 @@
+[package]
+name = "pixpin-tinta"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Motor del trazo en curso: muestreo, suavizado, prediccion y troceado. Puro, sin Windows y sin dependencias."
+
+# A proposito SIN dependencias, ni siquiera de otros crates de PixPin: el
+# trazo en curso es la parte mas sensible a la latencia de todo el programa y
+# tiene que poder probarse y medirse sin GPU, sin ventana y sin escena.
+[dependencies]

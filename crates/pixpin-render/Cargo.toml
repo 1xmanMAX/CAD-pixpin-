@@ -1,0 +1,25 @@
+[package]
+name = "pixpin-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "2.0.20"
+pixpin-nivel = { path = "../pixpin-nivel" }
+pixpin-hojas = { path = "../pixpin-hojas" }
+pixpin-office = { path = "../pixpin-office" }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_DirectComposition", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Imaging", "Win32_Graphics_Printing", "Win32_Graphics_Printing_PrintTicket", "Win32_Storage_Xps", "Win32_Storage_Xps_Printing", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_Time", "Win32_System_WinRT", "Win32_System_WinRT_Printing", "Graphics_Printing", "Graphics_Printing_OptionDetails", "Foundation", "Foundation_Collections"] }
+# `IAsyncOperation` del dialogo moderno de imprimir (`imprimir_moderno.rs`):
+# el crate `windows` lo usa pero no lo reexporta.
+windows-future = "0.3.2"
+# `#[implement]` escribe `windows_core::...`: tiene que estar por su nombre.
+windows-core = "0.62.2"
+windows-numerics = "0.3.1"
+
+[dev-dependencies]
+serde_json = "1.0"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+pixpin-codec = { path = "../pixpin-codec" }
+pixpin-pdf = { path = "../pixpin-pdf" }

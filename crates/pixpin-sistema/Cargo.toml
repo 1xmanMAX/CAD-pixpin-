@@ -1,0 +1,23 @@
+[package]
+name = "pixpin-sistema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+
+# En Windows se le pregunta a Windows; en el resto (Mac, iPhone, Linux de la
+# CI) va la version portable de cada funcion. Ver lib.rs.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_UI_Shell", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+[dev-dependencies]
+# Las pruebas de ida y vuelta de `Atajo`.
+serde_json = "1.0.151"
+
+# `localtime_r` para saber el huso del usuario sin el crate `windows`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"

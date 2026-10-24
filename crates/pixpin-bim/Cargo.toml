@@ -1,0 +1,21 @@
+[package]
+name = "pixpin-bim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pixpin-cad = { path = "../pixpin-cad" }
+# Lee IFC (2x3, 4, 4.3) y lo convierte en mallas: ifc-lite, Rust puro,
+# MPL-2.0 (github.com/LTplus-AG/ifc-lite). Se usa tal cual, como dependencia.
+ifc-lite-processing = "20.3"
+# Lee Revit (.rvt) sin Revit y lo pasa a IFC4: rvt-rs, Apache-2.0
+# (github.com/DrunkOnJava/rvt-rs), de git: la 0.4 publicada aun no lee los
+# proyectos de Revit 2023 ni dibuja los muebles con sus mallas guardadas.
+rvt = { git = "https://github.com/DrunkOnJava/rvt-rs", rev = "120e2f9" }
+# LandXML de Civil 3D (MIT/Apache).
+roxmltree = "0.20"
+# Triangular los puntos sueltos en una superficie (ISC).
+delaunator = "1.0"
+tracing = "0.1"

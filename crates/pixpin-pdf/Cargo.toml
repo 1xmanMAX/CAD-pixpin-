@@ -1,0 +1,24 @@
+[package]
+name = "pixpin-pdf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pixpin-codec = { version = "0.1.0", path = "../pixpin-codec" }
+pixpin-motor2d = { version = "0.1.0", path = "../pixpin-motor2d" }
+# Comprimir el PDF que se escribe (`escribir`). Ya esta en el arbol por
+# pixpin-proyecto: no anade ni un byte de descarga.
+flate2 = "1.1"
+thiserror = "2.0"
+# Buscar las capas cocidas en un PDF de once megas (`cocido`) en el hilo de
+# la interfaz: a mano tardaba 265 ms. Ya esta en el arbol (Cargo.lock).
+memchr = "2"
+windows-future = "0.3"
+windows = { version = "0.62.2", features = ["Data_Pdf", "Storage", "Storage_Streams", "Graphics_Imaging", "Foundation", "Win32_Foundation", "Win32_System_Com", "Win32_Graphics_DirectWrite"] }
+
+[dev-dependencies]
+# Leer el JSON del plano en las pruebas como lo lee la pagina. Ya esta en el
+# arbol por pixpin-proyecto.
+serde_json = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "pixpin-office"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Un `.docx` y un `.pptx` son ZIP con XML dentro: el mismo lector de ZIP (y
+# la misma version) que ya usan `pixpin-docs` y `pixpin-proyecto`.
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# El lector de XML propio, que no abre la puerta a entidades externas.
+pixpin-docs = { path = "../pixpin-docs" }
+# Buscar las secciones en un `document.xml` de muchos megas sin leerlo
+# entero: ya esta en el arbol (pixpin-pdf).
+memchr = "2"
+

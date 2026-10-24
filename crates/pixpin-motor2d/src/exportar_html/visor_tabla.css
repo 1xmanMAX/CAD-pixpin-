@@ -1,0 +1,52 @@
+:root{--cabecera:#f1f3f4;--rejilla:#dadce0}
+body.oscuro{--cabecera:#2b2c2f;--rejilla:#3c4043}
+.hoja[data-tipo=tabla]{display:flex;flex-direction:column}
+/* Sin esto la tabla oculta se sigue pintando encima de las otras páginas: la regla de
+   arriba pesa lo mismo que `.hoja[hidden]` y va detrás (usuario, 11-sep-2026). */
+.hoja[data-tipo=tabla][hidden]{display:none}
+.tabla-fx{display:flex;align-items:center;gap:8px;padding:8px 10px;flex:none;
+  border-bottom:1px solid var(--rejilla);background:var(--vidrio)}
+.tabla-dir{min-width:4.6em;font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.75}
+.tabla-fx-in{flex:1;min-width:0;font:15px ui-monospace,SFMono-Regular,Menlo,monospace;padding:8px 10px;
+  border:1px solid var(--rejilla);border-radius:9px;background:transparent;color:inherit;outline:none}
+.tabla-fx-in:focus{border-color:#1a73e8;box-shadow:0 0 0 2px rgba(26,115,232,.2)}
+.tabla-caja{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;outline:none;position:relative}
+table.calc{border-collapse:separate;border-spacing:0;table-layout:fixed;position:relative;
+  font-size:calc(13px*var(--tz,1));margin-bottom:140px;font-variant-numeric:tabular-nums}
+table.calc th,table.calc td{border-right:1px solid var(--rejilla);border-bottom:1px solid var(--rejilla);
+  padding:0 6px;height:calc(26px*var(--tz,1));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  box-sizing:border-box;text-align:left}
+table.calc thead th{position:sticky;top:0;z-index:2;background:var(--cabecera);font-weight:500;
+  text-align:center;opacity:1}
+table.calc tbody th{position:sticky;left:0;z-index:1;background:var(--cabecera);font-weight:500;
+  text-align:center;width:46px;min-width:46px}
+table.calc th.esq{left:0;z-index:3;width:46px;min-width:46px}
+table.calc td.d{text-align:right}
+table.calc td.c{text-align:center}
+table.calc td.n{font-weight:700}
+table.calc td.err{color:#d93025}
+table.calc td.sel{box-shadow:inset 0 0 0 999px rgba(26,115,232,.14)}
+table.calc td.act{outline:2px solid #1a73e8;outline-offset:-2px}
+table.calc th.marcada{background:#d2e3fc;color:#174ea6}
+body.oscuro table.calc th.marcada{background:#28436b;color:#d2e3fc}
+html.vivo table.calc{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;cursor:cell}
+html.vivo table.calc th{cursor:pointer}
+/* Las celdas con fórmula: un marco fino y discreto, sin relleno (usuario, 11-sep-2026). */
+table.calc td.f{box-shadow:inset 0 0 0 1px rgba(217,48,37,.55)}
+table.calc td.f.sel{box-shadow:inset 0 0 0 1px rgba(217,48,37,.55),inset 0 0 0 999px rgba(26,115,232,.14)}
+/* **La tabla, dentro de un lienzo.** Con guion, la caja no se desplaza: se pasea y se amplía
+   el mundo que la lleva, y alrededor queda sitio para anotar. Las cabeceras van con la tabla. */
+html.vivo .tabla-caja{overflow:hidden;touch-action:none;cursor:grab}
+html.vivo .tabla-caja.agarrada{cursor:grabbing}
+#lienzo.pintando .tabla-caja{cursor:crosshair}
+.tabla-mundo{position:absolute;left:0;top:0;transform-origin:0 0}
+html.vivo table.calc{margin:0;box-shadow:0 1px 8px rgba(0,0,0,.14)}
+html.vivo table.calc thead th,html.vivo table.calc tbody th{position:static}
+.tabla-mundo svg.tinta{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;
+  pointer-events:none!important;z-index:2}
+/* En una tabla protegida, las celdas que sí se pueden cambiar. Van detrás de la fórmula:
+   una celda editable con fórmula se ve editable. */
+table.calc td.ed{background:rgba(255,193,7,.24)}
+.tabla-caja svg.tinta{z-index:1}
+.tabla-marcas{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:1}
+.tabla-marca{position:absolute;border:2px solid;box-sizing:border-box;border-radius:2px}
