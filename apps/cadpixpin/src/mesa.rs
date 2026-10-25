@@ -466,6 +466,7 @@ impl Mesa {
             if self.rejilla_visible {
                 self.pintar_rejilla(p, &d.dibujo, w, h, e);
             }
+            self.pintar_pendiente(p, &a_pantalla, e, &vista);
             self.pintar_seleccion(p, &a_pantalla, e, &vista);
             if let Some((q, _)) = ajustado {
                 let previa = self.sesion.previa(q);
@@ -524,6 +525,40 @@ impl Mesa {
 
     /// Lo elegido que se ve en `vista`: lo mayor primero y, con mucho
     /// elegido (Ctrl+A), hasta un tope y un recuadro de todo.
+    /// **Lo recien dibujado que aun no esta en la tarjeta**: mientras su cubo
+    /// se vuelve a convertir en otro hilo, se pinta aqui con el color de su
+    /// capa. Sin esto, lo ultimo que se dibujo desaparecia un par de
+    /// fotogramas (el parpadeo al dibujar una linea tras otra).
+    fn pintar_pendiente(
+        &self,
+        p: &Pintor,
+        a_pantalla: &impl Fn(P) -> (f32, f32),
+        e: f32,
+        vista: &[f64; 4],
+    ) {
+        const TOPE: usize = 5000;
+        if !self.plano.esperando() {
+            return;
+        }
+        let dib = &self.sesion.dibujo;
+        let Some(hs) = dib.cambios_desde(self.plano.vista) else {
+            return;
+        };
+        let ind = dib.indice();
+        for h in hs.iter().take(TOPE) {
+            let (Some(en), Some(ent)) = (ind.de_handle(*h), dib.entidad(*h)) else {
+                continue;
+            };
+            if !cad_nucleo::geo::se_tocan(&en.caja, vista) {
+                continue;
+            }
+            let color = color_de_entidad(dib, ent);
+            for f in &en.formas {
+                trazar_forma(p, f, a_pantalla, self.camara.px, 1.0 * e, color);
+            }
+        }
+    }
+
     fn pintar_seleccion(
         &self,
         p: &Pintor,
@@ -589,17 +624,17 @@ impl Mesa {
         let fila = |x: f32, ancho: f32| rect(x, 5.0 * e, ancho, alto - 10.0 * e);
         // Lo de siempre a la izquierda.
         for (texto, accion, ayuda) in [
-            ("⌂ Inicio", Accion::Inicio, "Volver a la pantalla de inicio"),
+            ("Inicio", Accion::Inicio, "Volver a la pantalla de inicio"),
             ("Guardar", Accion::Guardar, "Guardar  Ctrl+S"),
             (
                 "Guardar como",
                 Accion::GuardarComo,
                 "Guardar como DWG o DXF  Ctrl+Mayus+S",
             ),
-            ("↶", Accion::Orden(Id::Deshacer), "Deshacer  Ctrl+Z"),
-            ("↷", Accion::Orden(Id::Rehacer), "Rehacer  Ctrl+Y"),
+            ("Deshacer", Accion::Orden(Id::Deshacer), "Deshacer  Ctrl+Z"),
+            ("Rehacer", Accion::Orden(Id::Rehacer), "Rehacer  Ctrl+Y"),
             (
-                "⤢",
+                "Ver todo",
                 Accion::Encuadre,
                 "Ver todo el plano  doble clic central",
             ),
@@ -824,25 +859,68 @@ impl Mesa {
                 p,
                 zonas,
                 ojo,
-                if visible { "◉" } else { "○" },
+                "",
                 tam,
                 Estilo::Plano,
                 encima,
                 Accion::CapaVisible(l.name.clone()),
                 "Encender o apagar",
             );
+            // El ojo: un circulo lleno si se ve, hueco si no.
+            let (ox, oy) = (ojo.x + ojo.ancho / 2.0, ojo.y + ojo.alto / 2.0);
+            if visible {
+                p.circulo((ox, oy), 4.5 * e, tema::AMARILLO);
+            } else {
+                p.anillo((ox, oy), 4.5 * e, 1.2 * e, tema::TEXTO_APAGADO);
+            }
             let candado = rect(x0 + ancho - 22.0 * e, y, 22.0 * e, alto_fila - 2.0 * e);
             ui::boton(
                 p,
                 zonas,
                 candado,
-                if bloqueada { "▣" } else { "□" },
+                "",
                 tam,
                 Estilo::Plano,
                 encima,
                 Accion::CapaBloqueo(l.name.clone()),
                 "Bloquear: se ve pero no se elige",
             );
+            // El candado: cerrado (relleno) o abierto (el arco a un lado).
+            let (kx, ky) = (
+                candado.x + candado.ancho / 2.0,
+                candado.y + candado.alto / 2.0,
+            );
+            let cuerpo = rect(kx - 4.5 * e, ky - 1.0 * e, 9.0 * e, 6.5 * e);
+            let col = if bloqueada {
+                tema::NARANJA
+            } else {
+                tema::TEXTO_APAGADO
+            };
+            if bloqueada {
+                p.rellenar(cuerpo, col);
+                p.polilinea(
+                    &[
+                        (kx - 3.0 * e, ky - 1.0 * e),
+                        (kx - 3.0 * e, ky - 5.0 * e),
+                        (kx + 3.0 * e, ky - 5.0 * e),
+                        (kx + 3.0 * e, ky - 1.0 * e),
+                    ],
+                    1.3 * e,
+                    col,
+                );
+            } else {
+                p.trazar(cuerpo, 1.2 * e, col);
+                p.polilinea(
+                    &[
+                        (kx - 3.0 * e, ky - 1.0 * e),
+                        (kx - 3.0 * e, ky - 5.0 * e),
+                        (kx + 3.0 * e, ky - 5.0 * e),
+                        (kx + 3.0 * e, ky - 3.5 * e),
+                    ],
+                    1.2 * e,
+                    col,
+                );
+            }
             y += alto_fila;
         }
         if capas.len() > caben {
@@ -1345,6 +1423,21 @@ fn paso_redondo(x: f64) -> f64 {
     } else {
         10.0
     }
+}
+
+/// El color con que se ve una entidad: el suyo o el de su capa (el 7,
+/// blanco sobre el fondo oscuro).
+fn color_de_entidad(d: &Dibujo, e: &EntityType) -> Color {
+    use cad_nucleo::opencadcodec::Color as C;
+    let de = |c: &C| match c {
+        C::Index(i) => Some(tema::de_aci(*i as i16)),
+        C::Rgb { r, g, b } => Some(tema::rgb(*r, *g, *b)),
+        _ => None,
+    };
+    let comun = e.common();
+    de(&comun.color)
+        .or_else(|| d.doc.layers.get(&comun.layer).and_then(|l| de(&l.color)))
+        .unwrap_or(tema::TEXTO)
 }
 
 /// Las propiedades de lo elegido: tipo, capa y lo que mide.

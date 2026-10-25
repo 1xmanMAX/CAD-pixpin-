@@ -27,6 +27,7 @@ Lo minimo, y solo anadido (lo de antes funciona igual):
 | Donde | Que | Para que |
 |---|---|---|
 | `pixpin-cad/src/convertir.rs` | `Convertidor::espacio(doc)`: lo que se dibuja (el espacio modelo o, si no tiene nada, el papel), sacado de `recorrer`. `Convertidor::convertir_estas(entidades)`: convierte solo esas entidades (pueden no estar en el documento) con los bloques, capas y estilos del documento, y devuelve sus letras ya hechas. `Convertidor::con_textos(textos)`: empieza con esas letras. | La app parte el plano en cubos (`apps/cadpixpin/src/cubos.rs` y `plano.rs`) y al editar solo convierte los tocados, en varios hilos, sin volver a leer las fuentes en cada cubo. |
+| `pixpin-cad/src/texto.rs` | En `Textos::fuente`, si no carga ninguna TrueType, la fuente queda con su SHX o, si no la hay, con la `romans.shx` de PixPin. | Antes, sin Arial en el equipo (o en Wine) se perdian todos los textos del plano, tambien los de SHX. |
 
 ## Nuevo en CAD-pixpin
 

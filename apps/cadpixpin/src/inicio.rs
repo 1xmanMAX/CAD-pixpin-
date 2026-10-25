@@ -48,7 +48,7 @@ pub fn pintar(
 
     // La cabecera: el nombre y lo que es.
     p.rellenar_redondeado(rect(x0, y, 40.0 * e, 40.0 * e), 10.0 * e, tema::ACENTO);
-    p.texto("⌖", x0 + 9.0 * e, y + 4.0 * e, 24.0 * e, tema::TEXTO);
+    icono(p, '+', x0, y, 40.0 * e, e);
     p.texto(
         "CAD-pixpin",
         x0 + 54.0 * e,
@@ -71,28 +71,28 @@ pub fn pintar(
     let th = 132.0 * e;
     let tarjetas = [
         (
-            "＋",
+            '+',
             "Plano nuevo",
             "En milimetros, con las capas de arquitectura, estructuras e instalaciones",
             Accion::PlanoNuevo,
             tema::ACENTO,
         ),
         (
-            "▤",
+            'p',
             "Abrir plano",
             "DWG (R13 a 2018+) o DXF. Se edita y se guarda en el mismo formato",
             Accion::AbrirPlano,
             tema::VERDE,
         ),
         (
-            "⬢",
+            'b',
             "Abrir modelo BIM",
             "IFC, Revit (.rvt), LandXML o puntos: en 3D, con niveles y metrados",
             Accion::AbrirModelo,
             tema::NARANJA,
         ),
     ];
-    for (i, (icono, titulo, texto, accion, color)) in tarjetas.into_iter().enumerate() {
+    for (i, (simbolo, titulo, texto, accion, color)) in tarjetas.into_iter().enumerate() {
         let r = rect(x0 + i as f32 * (tw + sep), y, tw, th);
         let sobre = encima.is_some_and(|(x, yy)| ui::dentro(&r, x, yy));
         p.rellenar_redondeado(
@@ -108,7 +108,7 @@ pub fn pintar(
             9.0 * e,
             color,
         );
-        p.texto(icono, r.x + 26.0 * e, r.y + 20.0 * e, 22.0 * e, tema::TEXTO);
+        icono(p, simbolo, r.x + 18.0 * e, r.y + 18.0 * e, 36.0 * e, e);
         p.texto(
             titulo,
             r.x + 18.0 * e,
@@ -353,4 +353,64 @@ fn pintar_recuperar(
         y += 46.0 * e;
     }
     y + 10.0 * e
+}
+
+/// **Un icono dibujado con rayas** (no con un caracter: no todas las letras
+/// del equipo traen esos simbolos y salian cuadrados): `+` nuevo, `p` un
+/// plano (hoja con su esquina doblada y una cota), `b` un modelo (un cubo).
+fn icono(p: &Pintor, simbolo: char, x: f32, y: f32, lado: f32, e: f32) {
+    let c = tema::TEXTO;
+    let g = 2.0 * e;
+    let (cx, cy, m) = (x + lado / 2.0, y + lado / 2.0, lado * 0.26);
+    match simbolo {
+        '+' => {
+            p.linea((cx - m, cy), (cx + m, cy), g, c);
+            p.linea((cx, cy - m), (cx, cy + m), g, c);
+        }
+        'p' => {
+            let (x0, y0, x1, y1) = (cx - m, cy - m * 1.2, cx + m, cy + m * 1.2);
+            let d = m * 0.6;
+            p.polilinea(
+                &[
+                    (x0, y0),
+                    (x1 - d, y0),
+                    (x1, y0 + d),
+                    (x1, y1),
+                    (x0, y1),
+                    (x0, y0),
+                ],
+                g,
+                c,
+            );
+            p.linea(
+                (x0 + m * 0.4, cy + m * 0.5),
+                (x1 - m * 0.4, cy + m * 0.5),
+                g * 0.7,
+                c,
+            );
+        }
+        _ => {
+            // Un cubo en perspectiva.
+            let (a, b) = (m * 0.9, m * 0.5);
+            let arriba = [
+                (cx, cy - a),
+                (cx + a, cy - a + b),
+                (cx, cy - a + 2.0 * b),
+                (cx - a, cy - a + b),
+            ];
+            p.polilinea(
+                &[arriba[0], arriba[1], arriba[2], arriba[3], arriba[0]],
+                g,
+                c,
+            );
+            p.linea(arriba[3], (cx - a, cy + a - b), g, c);
+            p.linea(arriba[1], (cx + a, cy + a - b), g, c);
+            p.linea(arriba[2], (cx, cy + a), g, c);
+            p.polilinea(
+                &[(cx - a, cy + a - b), (cx, cy + a), (cx + a, cy + a - b)],
+                g,
+                c,
+            );
+        }
+    }
 }

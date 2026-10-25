@@ -285,6 +285,20 @@ impl Textos {
             }
             if let Some(f) = f.as_mut() {
                 f.shx = shx;
+            } else {
+                // CAD-pixpin: sin ninguna TrueType (un equipo sin Arial, Wine) los
+                // textos no desaparecen: van con la SHX que se pidio o con la
+                // romans de PixPin, que siempre esta.
+                if let Some(shx) = shx.or_else(|| crate::shx::de_reserva("romans.shx")) {
+                    f = Some(Fuente {
+                        id: self.fuentes.len() as u32,
+                        shx: Some(shx),
+                        datos: Arc::new(Vec::new()),
+                        letras: HashMap::new(),
+                        alto_mayuscula: 1.0,
+                        escala_ttf: 1.0,
+                    });
+                }
             }
             self.fuentes.insert(clave.clone(), f);
         }
