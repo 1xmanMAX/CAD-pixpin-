@@ -11,7 +11,8 @@ proyectos, se abre en una **pantalla de inicio** y una **mesa de trabajo de CAD*
 | Para qué | Capturar, fijar y anotar de todo | Dibujar y revisar planos y modelos |
 | Al abrir | Chat por proyectos | Inicio: plano nuevo, abrir plano, abrir modelo BIM, recientes |
 | Planos DWG/DXF | Ver, medir, anotar encima, imprimir | Todo eso **y editar**: órdenes de CAD, capas, guardar en DWG o DXF |
-| Modelos BIM | Ver en 3D, cortar, niveles | Lo mismo, y **metrados por nivel y partida** a CSV |
+| Modelos BIM | Ver en 3D, cortar, niveles | Lo mismo, el **explorador de datos** de Revit e IFC (parámetros, Psets, tablas) y **metrados** a CSV y Excel |
+| Formatos | DWG, DXF, PDF para leer | DWG/DXF 2000–2018, **importar y exportar PDF y SVG**, imágenes, referencias externas, **IFC4, GLB, OBJ, STL** |
 
 ## Qué hay dentro
 
@@ -54,7 +55,9 @@ cotas, sombreados, presentaciones).
 | Anotar | COTALINEAL (DLI), COTAALINEADA (DAL), CONTINUA (DCO), LINEABASE (DBA), RADIO (DRA), DIAMETRO (DDI), ANGULAR (DAN), ESCALACOTA (EC), COTA desmontada (COT), MTEXTO (MT), EDITARTEXTO (ED), ALTOTEXTO (AT), NIVEL (NPT), NORTE (NO), LAMINA (LA) |
 | Bloques | BLOQUE (B), INSERTAR (I), BIBLIOTECA (BIB), SOMBREADO (SO, HATCH), INSERTARDWG (IA) |
 | Referencias externas | REFX (XA, XATTACH, XREF), REFSUPERPONER (XOVERLAY), RECARGARREF (XRELOAD), UNIRREF (XBIND), QUITARREF (XDETACH), LISTAREF (LREF, XREFS) |
-| Medir | DISTANCIA (DI), AREA (AA) |
+| Medir | DISTANCIA (DI), AREA (AA), REVITAPLANTA (RVTPLANTA), EXPLORARBIM (EB) |
+| Formatos | IMPORTARPDF (PDFIMPORT), EXPORTARPDF (EXPORTPDF), IMPORTARSVG, EXPORTARSVG, IMAGEN (IMAGEATTACH), GUARDARVERSION, EXPORTARDXF (W, WBLOQUE), ESCALAREF |
+| 3D | EXTRUIR (EXT), ALTURA (ALT), MURO3D (M3D), LOSA, NIVELES (NIVS), EXPORTAR3D, IMPORTAR3D, VER3D (3D) |
 | Vista y capas | ZOOM (Z), ZE, CAPA (CA), LAYISO, LAYUNISO, LAYOFF, LAYON, LAYMCUR, LAYLCK, LAYULK |
 | Selección | SS (similares), SP (previa), SLC (por capa), INV (invertir) |
 | Edición | DESHACER (U, Ctrl+Z), REHACER (Ctrl+Y), portapapeles (Ctrl+C, Ctrl+X, Ctrl+V) |
@@ -96,6 +99,56 @@ Cada orden nueva vive en su módulo de `crates/cad-nucleo/src/herramientas/` (el
 - **INSERTARDWG** trae otro plano entero como un bloque de este (con sus capas y bloques; lo
   que ya hay con el mismo nombre gana).
 
+#### Formatos 2D
+
+- **IMPORTARPDF**: una página de un PDF (de AutoCAD, de Revit, de LibreOffice, escaneado
+  con texto…) pasa a líneas, polilíneas, círculos, rellenos y **textos editables**, cada capa
+  del PDF (o cada color) a su capa `PDF_…`. Se abre aunque su tabla interna esté rota; tope
+  de 5 millones de operaciones. Después, **ESCALAREF** lo deja a escala con una distancia
+  conocida.
+- **EXPORTARPDF**: PDF vectorial de todo, de una ventana o **una página por lámina** (los
+  marcos de L-LAMINA), de A4 a A0 y a escala, con grosores, colores o monocromo, y una capa
+  del PDF por capa del plano.
+- **SVG**: exportar (una capa de Inkscape por capa) e importar (trayectos, transformaciones,
+  `<use>`, unidades).
+- **IMAGEN**: PNG, JPG, BMP, TIF o GIF enlazados como `IMAGE` (se guardan en DWG y DXF y la
+  app los pinta).
+- **GUARDARVERSION**: DWG o DXF 2000, 2004, 2007, 2010, 2013 o 2018, para quien tiene un
+  AutoCAD antiguo. **EXPORTARDXF** (`W`) guarda solo lo elegido en otro fichero.
+
+#### 3D desde la planta
+
+- **MURO3D** levanta los muros dibujados con MURO (o un eje y un espesor) a su altura, con
+  los **huecos de las puertas y ventanas** que tengan encima; **LOSA**, **EXTRUIR** y **ALTURA**
+  hacen losas, sólidos y alturas a la manera de AutoCAD; **NIVELES** guarda las plantas
+  (nombre y cota) dentro del dibujo.
+- **VER3D** (`3D`) abre el dibujo en la ventana 3D de PixPin.
+- **EXPORTAR3D**: **IFC4** (proyecto, edificio, plantas, muros, losas, puertas, ventanas,
+  columnas y vigas como sólidos extruidos, con su material y un Pset), **GLB** (glTF),
+  **OBJ** con colores y **STL**; el tipo de cada pieza sale del nombre de su capa (MURO,
+  LOSA, PUERTA…). **IMPORTAR3D** trae STL, OBJ, glTF, FBX y COLLADA como mallas.
+
+#### Datos BIM: Revit e IFC
+
+Con el crate `cad-bim-datos` (rvt-rs e ifc-lite, Rust puro):
+
+- **Revit** (`.rvt`, `.rfa`): versión y compilación, quién lo guardó, trabajo compartido,
+  datos del proyecto, OmniClass, la **vista previa**, niveles, **habitaciones** con área y
+  volumen, materiales y, en proyectos de Revit 2023 a 2025, **cada elemento** con su
+  categoría, familia, tipo, nivel, materiales, caja y los parámetros que rvt-rs sabe leer.
+  Ejemplo: `2024_Core_Interior.rvt` da 15 niveles, 970 elementos (360 muros, 132 puertas,
+  256 columnas…), 116 habitaciones y 34 166 valores en 3,7 s. Lo que rvt-rs no lee (los
+  elementos de Revit 2022 y anteriores, la geometría de las familias) se dice en pantalla.
+- **IFC**: el árbol Proyecto ▸ Sitio ▸ Edificio ▸ Planta ▸ Espacio, y de cada elemento sus
+  Psets y cantidades (Qto) con unidades, materiales por capas, clasificación y tipos.
+- **EXPLORARBIM** (`EB`, o «Explorar datos» en el inicio): una ventana con la ficha del
+  proyecto y su imagen, el árbol con cuántos hay de cada cosa, las propiedades del elemento
+  elegido por grupos, un buscador y **tablas de planificación** ordenables por planta o
+  categoría. Exporta a **CSV**, **JSON**, **Excel** (una hoja por categoría), el metrado y,
+  de un Revit, a **IFC4** y **GLB**; y lo abre en 3D.
+- **REVITAPLANTA**: la planta de un nivel de un Revit, dibujada en el plano en capas
+  `BIM-<categoría>`, para seguir trabajándola en 2D.
+
 #### Rendimiento en planos grandes
 
 Pensado para 200 000 a 500 000 objetos en un Core i3 de 3.ª generación:
@@ -111,6 +164,8 @@ Pensado para 200 000 a 500 000 objetos en un Core i3 de 3.ª generación:
 - En la tarjeta gráfica el plano va **por cubos** de unos 4 000 objetos, convertidos en
   varios hilos: una edición vuelve a convertir solo los cubos que toca, y lo de antes sigue
   a la vista mientras tanto.
+- Crear, mover o deshacer **cotas** (y redefinir un bloque) solo rehace los cubos con los
+  INSERT y cotas que usan ese bloque.
 - El resaltado de lo elegido se guarda por versión y solo pinta lo visible; los
   movimientos del ratón seguidos se juntan en uno.
 - **Mover, copiar o borrar todo** (Ctrl+A) en 220 000 objetos: 0,6 s, 2,4 s y 0,1 s
@@ -259,8 +314,14 @@ Ver [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 ## Lo que sigue
 
-- Portar desde `referencia/` el anotado con el motor del lienzo, imprimir láminas y
-  exportar a PDF.
+- Probarla en Windows de verdad (se ha probado en Linux con Wine:
+  `herramientas/probar-en-wine.sh`).
+- Portar desde `referencia/` el anotado con el motor del lienzo e imprimir láminas a la
+  impresora (a PDF ya se puede).
+- Imágenes giradas en pantalla (hoy se ve su marco), recorte de referencias externas y
+  editarlas en su sitio.
+- Huecos de puertas y ventanas como `IfcOpeningElement` en el IFC, y las que están dentro
+  de bloques.
 - Propiedades BIM: editar los `Pset` de cada elemento del IFC (leerlos ya se puede, en el
   explorador). Más parámetros de Revit cuando `rvt-rs` los decodifique (hoy, la mayoría de
   los de ejemplar no; los elementos de Revit 2022 o anterior, tampoco).
