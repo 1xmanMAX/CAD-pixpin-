@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use cad_nucleo::Dibujo;
 use cad_nucleo::geo::{self, Caja, P};
+use cad_nucleo::opencadcodec::tables::{Layer, Table};
 use cad_nucleo::opencadcodec::{CadDocument, EntityType};
 use pixpin_cad::convertir::Convertidor;
 use pixpin_cad::gpu::{Gpu, PlanoGpu, Vista};
@@ -83,8 +84,14 @@ impl Camara {
 enum Pedido {
     /// Todo de nuevo, con una copia del documento.
     Todo { version: u64, doc: Box<CadDocument> },
-    /// Lo que cambio desde el pedido anterior.
-    Cambios { version: u64, cambios: Vec<Cambio> },
+    /// Lo que cambio desde el pedido anterior, con las capas de ahora (al
+    /// apagar o bloquear una capa solo llegan sus entidades: el hilo pone
+    /// estas capas en su copia del documento para convertirlas bien).
+    Cambios {
+        version: u64,
+        cambios: Vec<Cambio>,
+        capas: Box<Table<Layer>>,
+    },
 }
 
 /// **Un cubo ya convertido**, partido en lo de abajo (rellenos y
@@ -234,6 +241,7 @@ impl Plano {
                     .into_iter()
                     .map(|h| (h, d.doc.get_entity_arc(h)))
                     .collect(),
+                capas: Box::new(d.doc.layers.clone()),
             },
             None => {
                 self.entero = v;
@@ -374,7 +382,18 @@ fn convertir_en_cubos(rx: Receiver<Pedido>, tx: Sender<Llegado>) {
                     });
                     Llegado::Todo { version, cubos }
                 }
-                Pedido::Cambios { version, cambios } => {
+                Pedido::Cambios {
+                    version,
+                    cambios,
+                    capas,
+                } => {
+                    if let Some(est) = estado.as_mut()
+                        && est.base.layers != *capas
+                    {
+                        // Los obreros ya soltaron su copia: no se clona el
+                        // documento, solo se cambian sus capas.
+                        Arc::make_mut(&mut est.base).layers = *capas;
+                    }
                     let se_puede = estado.as_ref().is_some_and(|est| {
                         est.por_partes
                             && cambios.iter().all(|(h, e)| {
@@ -432,13 +451,19 @@ fn juntar(cola: Vec<Pedido>) -> Vec<Pedido> {
     for p in cola.into_iter().skip(desde) {
         match (out.last_mut(), p) {
             (
-                Some(Pedido::Cambios { version, cambios }),
+                Some(Pedido::Cambios {
+                    version,
+                    cambios,
+                    capas,
+                }),
                 Pedido::Cambios {
                     version: v,
                     cambios: nuevos,
+                    capas: c,
                 },
             ) => {
                 *version = v;
+                *capas = c;
                 cubos::juntar_cambios(cambios, nuevos);
             }
             (_, p) => out.push(p),
@@ -668,6 +693,7 @@ mod pruebas {
         let cambio = |v: u64, h: u64| Pedido::Cambios {
             version: v,
             cambios: vec![(Handle::new(h), None)],
+            capas: Box::default(),
         };
         let todo = |v: u64| Pedido::Todo {
             version: v,
@@ -677,7 +703,9 @@ mod pruebas {
             ps.iter()
                 .map(|p| match p {
                     Pedido::Todo { version, .. } => (*version, usize::MAX),
-                    Pedido::Cambios { version, cambios } => (*version, cambios.len()),
+                    Pedido::Cambios {
+                        version, cambios, ..
+                    } => (*version, cambios.len()),
                 })
                 .collect()
         };

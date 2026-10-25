@@ -16,6 +16,7 @@ use opencadcodec::entities::{
 use opencadcodec::tables::{BlockRecord, DimStyle};
 use opencadcodec::{CadDocument, Color, EntityType, Handle};
 
+use crate::asociar::{self, Asociacion, Objetivo};
 use crate::dibujo::{Dibujo, Transaccion};
 use crate::especialidad as esp;
 use crate::formas::{self, p2, v3};
@@ -98,8 +99,29 @@ fn estilo_nuevo(alto_texto: f64, decimales: usize) -> DimStyle {
     e
 }
 
+/// **Los estilos hijos** del de cotas (como los `$n` de AutoCAD, que los
+/// aplica solo por el tipo de cota): angular (`$2`), diametro (`$3`) y radio
+/// (`$4`) van con flechas; la lineal y la alineada, con las marcas del padre.
+pub const HIJOS: [u8; 3] = [2, 3, 4];
+
+/// El nombre del estilo hijo `n` (`PIXPIN$4`).
+pub fn nombre_hijo(n: u8) -> String {
+    format!("{ESTILO}${n}")
+}
+
+/// El hijo que le toca a una cota (`None`: la lineal y la alineada).
+fn hijo_de(dim: &Dimension) -> Option<u8> {
+    match dim {
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) => Some(2),
+        Dimension::Diameter(_) => Some(3),
+        Dimension::Radius(_) | Dimension::LargeRadial(_) => Some(4),
+        _ => None,
+    }
+}
+
 /// **El estilo de cota del dibujo**: lo crea (para `alto_texto`) si no esta,
-/// lo deja como el actual y devuelve sus medidas.
+/// con sus hijos de flechas ([`HIJOS`]), lo deja como el actual y devuelve
+/// sus medidas.
 pub fn asegurar_estilo(doc: &mut CadDocument, alto_texto: f64, decimales: usize) -> Medidas {
     if !doc.dim_styles.contains(ESTILO) {
         let mut e = estilo_nuevo(alto_texto, decimales);
@@ -110,8 +132,21 @@ pub fn asegurar_estilo(doc: &mut CadDocument, alto_texto: f64, decimales: usize)
         doc.header.dim_scale = e.dimscale;
         let _ = doc.dim_styles.add(e);
     }
-    let e = doc.dim_styles.get(ESTILO).expect("recien creado");
-    Medidas::de(e)
+    let padre = doc.dim_styles.get(ESTILO).expect("recien creado").clone();
+    for n in HIJOS {
+        let nombre = nombre_hijo(n);
+        if !doc.dim_styles.contains(&nombre) {
+            let mut e = padre.clone();
+            e.name = nombre;
+            e.handle = doc.allocate_handle();
+            // Sin marca: flechas (DIMBLK vacio es la rellena de siempre).
+            e.dimtsz = 0.0;
+            e.dimblk = Handle::NULL;
+            e.dimblk_name = String::new();
+            let _ = doc.dim_styles.add(e);
+        }
+    }
+    Medidas::de(&padre)
 }
 
 /// **Las medidas de las cotas nuevas**: las del estilo del dibujo o, si aun
@@ -130,19 +165,43 @@ pub fn escala(doc: &CadDocument) -> Option<f64> {
 /// **Cambia la escala de las cotas** que se hagan desde ahora.
 pub fn poner_escala(dibujo: &mut Dibujo, alto_texto: f64, decimales: usize, k: f64) {
     asegurar_estilo(&mut dibujo.doc, alto_texto, decimales);
-    if let Some(e) = dibujo.doc.dim_styles.get_mut(ESTILO) {
-        e.dimscale = k;
+    let nombres = std::iter::once(ESTILO.to_string()).chain(HIJOS.map(nombre_hijo));
+    for n in nombres {
+        if let Some(e) = dibujo.doc.dim_styles.get_mut(&n) {
+            e.dimscale = k;
+        }
     }
     dibujo.doc.header.dim_scale = k;
     dibujo.tocar();
 }
 
-/// Las medidas con que se dibuja una cota (las de su estilo).
+/// Las medidas con que se dibuja una cota (las de su estilo o, si lo tiene,
+/// las de su hijo para ese tipo de cota).
 pub fn medidas_de(doc: &CadDocument, dim: &Dimension, por_defecto: Medidas) -> Medidas {
-    doc.dim_styles
-        .get(&dim.base().style_name)
+    let estilo = &dim.base().style_name;
+    hijo_de(dim)
+        .and_then(|n| doc.dim_styles.get(&format!("{estilo}${n}")))
+        .or_else(|| doc.dim_styles.get(estilo))
         .filter(|e| e.dimtxt > 0.0)
         .map_or(por_defecto, Medidas::de)
+}
+
+/// **La XDATA de ACAD que fuerza flechas** en una cota (DSTYLE con DIMTSZ,
+/// codigo 142, a 0): asi AutoCAD la regenera con flechas aunque no mire los
+/// estilos hijos.
+fn con_flechas(dim: &mut Dimension) {
+    use opencadcodec::xdata::{ExtendedDataRecord, XDataValue};
+    let mut r = ExtendedDataRecord::new("ACAD");
+    for v in [
+        XDataValue::String("DSTYLE".into()),
+        XDataValue::ControlString("{".into()),
+        XDataValue::Integer16(142),
+        XDataValue::Real(0.0),
+        XDataValue::ControlString("}".into()),
+    ] {
+        r.add_value(v);
+    }
+    dim.base_mut().common.extended_data.upsert_record(r);
 }
 
 // ---------------------------------------------------------------- crear cotas
@@ -554,7 +613,10 @@ fn nombre_libre(doc: &CadDocument) -> String {
 }
 
 /// **Anade una cota al dibujo** con su bloque `*Dn`, en la capa de cotas y
-/// con el estilo del dibujo (de una vez: un paso de deshacer).
+/// con el estilo del dibujo (de una vez: un paso de deshacer, que tambien
+/// quita el bloque). Queda asociada a lo que mide ([`asociar::detectar`]):
+/// los puntos que caen en un extremo, vertice o centro de algo dibujado, el
+/// circulo de una de radio o las lineas de una angular.
 pub fn crear(
     dibujo: &mut Dibujo,
     nombre: &str,
@@ -562,8 +624,10 @@ pub fn crear(
     alto_texto: f64,
     decimales: usize,
 ) -> Option<Handle> {
-    let m = asegurar_estilo(&mut dibujo.doc, alto_texto, decimales);
+    let estilo = asegurar_estilo(&mut dibujo.doc, alto_texto, decimales);
+    asociar::asegurar_app(&mut dibujo.doc);
     dibujo.asegurar_capa(esp::CAPA_COTAS, esp::color_de_capa(esp::CAPA_COTAS));
+    let asociaciones = asociar::detectar(dibujo, &dim);
     let doc = &mut dibujo.doc;
     let bloque = nombre_libre(doc);
     let mut br = BlockRecord::new(&bloque);
@@ -572,17 +636,26 @@ pub fn crear(
     br.block_end_handle = doc.allocate_handle();
     br.flags.anonymous = true;
     let dueno = br.handle;
-    doc.block_records.add(br).ok()?;
     {
         let b = dim.base_mut();
         b.style_name = ESTILO.to_string();
         b.block_name = bloque;
     }
+    if hijo_de(&dim).is_some() {
+        con_flechas(&mut dim);
+    }
+    let m = medidas_de(doc, &dim, estilo);
     let (piezas, centro) = dibujo_de_cota(&dim, &m);
     dim.base_mut().text_middle_point = v3(centro);
+    let app = asociar::app_handle(doc);
     dibujo.editar(nombre, |t| {
+        t.anadir_bloque(br).ok()?;
         poner_piezas(t, dueno, piezas);
-        t.anadir_en(EntityType::Dimension(dim), esp::CAPA_COTAS)
+        let h = t.anadir_en(EntityType::Dimension(dim), esp::CAPA_COTAS)?;
+        if !asociaciones.is_empty() {
+            t.cambiar(h, |e| asociar::escribir_cota(app, e, &asociaciones));
+        }
+        Some(h)
     })
 }
 
@@ -619,6 +692,256 @@ pub fn rehacer_bloque(t: &mut Transaccion, h: Handle, por_defecto: Medidas) -> b
         }
     });
     true
+}
+
+// ------------------------------------------------------ cotas asociativas
+
+/// Los puntos que definen una cota (para saber si cambio su geometria).
+fn puntos_de(dim: &Dimension) -> Vec<P> {
+    match dim {
+        Dimension::Linear(d) => vec![
+            p2(&d.first_point),
+            p2(&d.second_point),
+            p2(&d.definition_point),
+        ],
+        Dimension::Aligned(d) => vec![
+            p2(&d.first_point),
+            p2(&d.second_point),
+            p2(&d.definition_point),
+        ],
+        Dimension::Radius(d) => vec![p2(&d.angle_vertex), p2(&d.definition_point)],
+        Dimension::Diameter(d) => vec![p2(&d.angle_vertex), p2(&d.definition_point)],
+        Dimension::Angular2Ln(d) => vec![
+            p2(&d.first_point),
+            p2(&d.second_point),
+            p2(&d.angle_vertex),
+            p2(&d.definition_point),
+            p2(&d.dimension_arc),
+        ],
+        otra => vec![p2(&otra.definition_point())],
+    }
+}
+
+fn mismos(a: &[P], b: &[P]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| geo::dist(*x, *y) <= asociar::tolerancia(*x))
+}
+
+/// Si el punto `cual` de la cota esta donde dice `o`.
+fn coincide(dim: &Dimension, cual: u8, o: &Objetivo) -> bool {
+    let cerca = |a: P, b: P| geo::dist(a, b) <= asociar::tolerancia(a).max(asociar::tolerancia(b));
+    let mismo_tramo = |a: (P, P), b: (P, P)| {
+        (cerca(a.0, b.0) && cerca(a.1, b.1)) || (cerca(a.0, b.1) && cerca(a.1, b.0))
+    };
+    match (dim, cual, *o) {
+        (Dimension::Linear(d), 0, Objetivo::Punto(p)) => cerca(p2(&d.first_point), p),
+        (Dimension::Linear(d), 1, Objetivo::Punto(p)) => cerca(p2(&d.second_point), p),
+        (Dimension::Aligned(d), 0, Objetivo::Punto(p)) => cerca(p2(&d.first_point), p),
+        (Dimension::Aligned(d), 1, Objetivo::Punto(p)) => cerca(p2(&d.second_point), p),
+        (Dimension::Radius(d), _, Objetivo::Circulo(c, r)) => {
+            cerca(p2(&d.angle_vertex), c)
+                && (geo::dist(c, p2(&d.definition_point)) - r).abs() <= asociar::tolerancia(c)
+        }
+        (Dimension::Diameter(d), _, Objetivo::Circulo(c, r)) => {
+            let (a, b) = (p2(&d.angle_vertex), p2(&d.definition_point));
+            cerca(geo::medio(a, b), c)
+                && (geo::dist(a, b) / 2.0 - r).abs() <= asociar::tolerancia(c)
+        }
+        (Dimension::Angular2Ln(d), 0, Objetivo::Tramo(a, b)) => {
+            mismo_tramo((p2(&d.first_point), p2(&d.second_point)), (a, b))
+        }
+        (Dimension::Angular2Ln(d), 1, Objetivo::Tramo(a, b)) => {
+            mismo_tramo((p2(&d.angle_vertex), p2(&d.definition_point)), (a, b))
+        }
+        _ => false,
+    }
+}
+
+/// Un tramo con el sentido de `viejo` (que su primer punto sea el mas
+/// cercano al primero de antes).
+fn en_su_sentido(nuevo: (P, P), viejo: (P, P)) -> (P, P) {
+    let directo = geo::dist(nuevo.0, viejo.0) + geo::dist(nuevo.1, viejo.1);
+    let cruzado = geo::dist(nuevo.0, viejo.1) + geo::dist(nuevo.1, viejo.0);
+    if cruzado < directo {
+        (nuevo.1, nuevo.0)
+    } else {
+        nuevo
+    }
+}
+
+/// **La cota llevada a lo que mide ahora**: `objetivos[k]` es lo que da la
+/// entidad del punto `k` (`None`: ese punto no esta asociado y se queda).
+/// La linea de cota se mueve con lo medido si todo se movio igual; si no, se
+/// queda donde estaba (y la alineada, a la misma distancia de lo medido).
+/// `None` si no cambia nada o si quedaria sin medir nada.
+pub fn recolocar(dim: &Dimension, objetivos: &[Option<Objetivo>; 2]) -> Option<Dimension> {
+    let punto = |k: usize, de: P| match objetivos[k] {
+        Some(Objetivo::Punto(p)) => p,
+        _ => de,
+    };
+    let mut d = dim.clone();
+    match &mut d {
+        Dimension::Linear(l) => {
+            let (p1, p2_, c2) = (
+                p2(&l.first_point),
+                p2(&l.second_point),
+                p2(&l.definition_point),
+            );
+            let (q1, q2) = (punto(0, p1), punto(1, p2_));
+            let u = [l.rotation.cos(), l.rotation.sin()];
+            let n = geo::perp(u);
+            // Donde va la linea de cota, a lo ancho.
+            let (d1, d2) = (geo::restar(q1, p1), geo::restar(q2, p2_));
+            let mut lado = geo::punto(c2, n);
+            if geo::dist(d1, d2) <= asociar::tolerancia(q2) {
+                lado += geo::punto(d2, n);
+            }
+            let medida = geo::punto(geo::restar(q2, q1), u).abs();
+            if medida < geo::EPS {
+                return None;
+            }
+            let c = geo::sumar(q2, geo::por(n, lado - geo::punto(q2, n)));
+            l.first_point = v3(q1);
+            l.second_point = v3(q2);
+            l.definition_point = v3(c);
+            l.base.definition_point = v3(c);
+            l.base.actual_measurement = medida;
+        }
+        Dimension::Aligned(l) => {
+            let (p1, p2_, c2) = (
+                p2(&l.first_point),
+                p2(&l.second_point),
+                p2(&l.definition_point),
+            );
+            let (q1, q2) = (punto(0, p1), punto(1, p2_));
+            let medida = geo::dist(q1, q2);
+            if medida < geo::EPS || geo::dist(p1, p2_) < geo::EPS {
+                return None;
+            }
+            let n0 = geo::perp(geo::unitario(geo::restar(p2_, p1)));
+            let lejos = geo::punto(geo::restar(c2, p2_), n0);
+            let n = geo::perp(geo::unitario(geo::restar(q2, q1)));
+            let c = geo::sumar(q2, geo::por(n, lejos));
+            l.first_point = v3(q1);
+            l.second_point = v3(q2);
+            l.definition_point = v3(c);
+            l.base.definition_point = v3(c);
+            l.base.actual_measurement = medida;
+        }
+        Dimension::Radius(r) => {
+            let Some(Objetivo::Circulo(c, radio)) = objetivos[0] else {
+                return None;
+            };
+            let dir = direccion(p2(&r.angle_vertex), p2(&r.definition_point));
+            r.angle_vertex = v3(c);
+            r.definition_point = v3(geo::sumar(c, geo::por(dir, radio)));
+            r.base.definition_point = r.definition_point;
+            r.base.actual_measurement = radio;
+        }
+        Dimension::Diameter(r) => {
+            let Some(Objetivo::Circulo(c, radio)) = objetivos[0] else {
+                return None;
+            };
+            let dir = direccion(p2(&r.angle_vertex), p2(&r.definition_point));
+            r.angle_vertex = v3(geo::sumar(c, geo::por(dir, -radio)));
+            r.definition_point = v3(geo::sumar(c, geo::por(dir, radio)));
+            r.base.definition_point = r.definition_point;
+            r.base.actual_measurement = 2.0 * radio;
+        }
+        Dimension::Angular2Ln(a) => {
+            let l1 = (p2(&a.first_point), p2(&a.second_point));
+            let l2 = (p2(&a.angle_vertex), p2(&a.definition_point));
+            let tramo = |k: usize, de: (P, P)| match objetivos[k] {
+                Some(Objetivo::Tramo(x, y)) => en_su_sentido((x, y), de),
+                _ => de,
+            };
+            let (n1, n2) = (tramo(0, l1), tramo(1, l2));
+            let por = p2(&a.dimension_arc);
+            // El arco gira y se mueve con el vertice.
+            let v0 = geo::corte_rectas(l1.0, l1.1, l2.0, l2.1)?;
+            let v1 = geo::corte_rectas(n1.0, n1.1, n2.0, n2.1)?;
+            let giro = geo::angulo(n1.0, n1.1) - geo::angulo(l1.0, l1.1);
+            let nuevo_por = geo::sumar(v1, geo::rotar(geo::restar(por, v0), [0.0, 0.0], giro));
+            let s = sector(n1, n2, nuevo_por)?;
+            a.first_point = v3(n1.0);
+            a.second_point = v3(n1.1);
+            a.angle_vertex = v3(n2.0);
+            a.definition_point = v3(n2.1);
+            a.base.definition_point = v3(n2.1);
+            a.dimension_arc = v3(nuevo_por);
+            a.base.actual_measurement = s.barrido;
+        }
+        _ => return None,
+    }
+    let cambia = !mismos(&puntos_de(dim), &puntos_de(&d))
+        || (dim.base().actual_measurement - d.base().actual_measurement).abs() > 1e-9;
+    cambia.then_some(d)
+}
+
+/// Si la cota es de las que hace CAD-pixpin (su bloque se puede rehacer).
+fn es_nuestra(dim: &Dimension) -> bool {
+    dim.base().style_name.eq_ignore_ascii_case(ESTILO) && !dim.base().block_name.is_empty()
+}
+
+/// **Sigue a lo que mide la cota `h`** dentro de la orden (lo llama
+/// [`asociar::propagar`]): pone sus puntos asociados donde estan ahora en
+/// las entidades, rehace su bloque, y suelta los puntos cuya entidad se
+/// borro o que se movieron solos (la cota, o ese punto, se cambio y lo
+/// medido no). Si la cota se movio sin asociaciones, solo rehace su bloque.
+pub fn seguir(t: &mut Transaccion, h: Handle) {
+    let Some(e) = t.entidad(h) else { return };
+    let EntityType::Dimension(dim) = e else {
+        return;
+    };
+    let dim = dim.clone();
+    let asocs = asociar::leer_cota(e);
+    let cambiada = t.cambio(h);
+    let antes = match t.antes(h) {
+        Some(EntityType::Dimension(a)) if cambiada => Some(a.clone()),
+        _ => None,
+    };
+    // Recien hecha: ya esta bien.
+    if cambiada && antes.is_none() {
+        return;
+    }
+    let mut quedan: Vec<Asociacion> = Vec::new();
+    let mut objetivos: [Option<Objetivo>; 2] = [None, None];
+    for a in &asocs {
+        let r = a.de.handle();
+        let Some(o) = t.entidad(r).and_then(|e| asociar::objetivo(e, a.de)) else {
+            continue;
+        };
+        if cambiada && !t.cambio(r) && !coincide(&dim, a.cual, &o) {
+            // Se movio la cota y lo medido no: ese punto queda suelto.
+            continue;
+        }
+        objetivos[a.cual.min(1) as usize] = Some(o);
+        quedan.push(*a);
+    }
+    let nueva = recolocar(&dim, &objetivos);
+    let movida = antes
+        .as_ref()
+        .is_some_and(|a| !mismos(&puntos_de(a), &puntos_de(&dim)));
+    if let Some(n) = &nueva {
+        t.cambiar(h, |e| {
+            if let EntityType::Dimension(d) = e {
+                let comun = d.base().common.clone();
+                *d = n.clone();
+                d.base_mut().common = comun;
+            }
+        });
+    }
+    if quedan.len() != asocs.len() {
+        let app = asociar::app_handle(t.doc());
+        t.cambiar(h, |e| asociar::escribir_cota(app, e, &quedan));
+    }
+    if (nueva.is_some() || movida) && es_nuestra(&dim) {
+        let k = t.doc().header.dim_scale;
+        let alto = ALTO_PAPEL * if k > 0.0 { k } else { 1.0 };
+        rehacer_bloque(t, h, Medidas::para(alto, 0));
+    }
 }
 
 // --------------------------------------------------------------- elegir

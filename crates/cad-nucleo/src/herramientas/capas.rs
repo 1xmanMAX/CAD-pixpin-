@@ -1,7 +1,8 @@
 //! **Las ordenes de capas** de cada dia: CAPA (hacer actual o crear por su
 //! nombre), aislar y desaislar, apagar y encender, bloquear y desbloquear,
 //! y la capa actual desde un objeto. Las capas no entran en deshacer (como
-//! en AutoCAD, salvo con CAPAPREVIA).
+//! en AutoCAD, salvo con CAPAPREVIA). Todo pasa por
+//! [`Dibujo::cambiar_capas`]: solo se pone al dia lo de esas capas.
 
 use opencadcodec::Handle;
 
@@ -238,17 +239,19 @@ impl Herramienta for PorObjetos {
         let es = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
         match self.0 {
             Que::Aislar => {
-                let mut apagadas = Vec::new();
-                for l in cx.dibujo.doc.layers.iter_mut() {
-                    if !l.is_off() && !capas.iter().any(|c| es(c, &l.name)) {
-                        l.turn_off();
-                        apagadas.push(l.name.clone());
-                    }
-                }
                 if !capas.iter().any(|c| es(c, &actual)) {
                     cx.dibujo.poner_capa_actual(&primera);
                 }
-                cx.dibujo.tocar();
+                let apagadas = cx.dibujo.cambiar_capas(|t| {
+                    let mut apagadas = Vec::new();
+                    for l in t.iter_mut() {
+                        if !l.is_off() && !capas.iter().any(|c| es(c, &l.name)) {
+                            l.turn_off();
+                            apagadas.push(l.name.clone());
+                        }
+                    }
+                    apagadas
+                });
                 cx.decir(format!(
                     "{} aislada(s): {} capas apagadas",
                     capas.join(", "),
@@ -322,16 +325,16 @@ impl Herramienta for EncenderTodas {
     }
 
     fn al_empezar(&mut self, cx: &mut Contexto) -> Flujo {
-        let mut n = 0;
-        for l in cx.dibujo.doc.layers.iter_mut() {
-            if l.is_off() {
-                l.turn_on();
-                n += 1;
+        let n = cx.dibujo.cambiar_capas(|t| {
+            let mut n = 0;
+            for l in t.iter_mut() {
+                if l.is_off() {
+                    l.turn_on();
+                    n += 1;
+                }
             }
-        }
-        if n > 0 {
-            cx.dibujo.tocar();
-        }
+            n
+        });
         cx.memoria.capas_aisladas.clear();
         cx.decir(format!("{n} capas encendidas"));
         Flujo::Termina

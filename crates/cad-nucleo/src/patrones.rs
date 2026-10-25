@@ -141,23 +141,36 @@ pub fn sombreado(
     };
     h.style = HatchStyleType::Normal;
     h.is_associative = false;
-    for (k, a) in exteriores.iter().chain(islas).enumerate() {
-        let mut camino = if k < exteriores.len() {
-            BoundaryPath::external()
-        } else {
-            BoundaryPath::new()
-        };
-        let mut pl = PolylineEdge::new(Vec::new(), true);
-        for (p, b) in a {
-            pl.vertices.push(Vector3::new(p[0], p[1], *b));
-        }
-        camino.add_edge(BoundaryEdge::Polyline(pl));
+    for camino in caminos(exteriores, islas) {
         h.add_path(camino);
     }
     if let Some(s) = semilla {
         h.add_seed_point(Vector2::new(s[0], s[1]));
     }
     EntityType::Hatch(h)
+}
+
+/// **Los caminos de un HATCH**: uno por anillo, como polilinea cerrada (los
+/// de fuera marcados como exteriores).
+pub fn caminos(exteriores: &[Anillo], islas: &[Anillo]) -> Vec<BoundaryPath> {
+    exteriores
+        .iter()
+        .chain(islas)
+        .enumerate()
+        .map(|(k, a)| {
+            let mut camino = if k < exteriores.len() {
+                BoundaryPath::external()
+            } else {
+                BoundaryPath::new()
+            };
+            let mut pl = PolylineEdge::new(Vec::new(), true);
+            for (p, b) in a {
+                pl.vertices.push(Vector3::new(p[0], p[1], *b));
+            }
+            camino.add_edge(BoundaryEdge::Polyline(pl));
+            camino
+        })
+        .collect()
 }
 
 /// **Un circulo como anillo**: dos medias vueltas (abombado 1).
