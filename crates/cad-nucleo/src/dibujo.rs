@@ -46,6 +46,12 @@ struct Paso {
     cambios: Vec<Cambio>,
 }
 
+impl Paso {
+    fn handles(&self) -> Vec<Handle> {
+        self.cambios.iter().map(|c| c.handle).collect()
+    }
+}
+
 /// Cuantos pasos se pueden deshacer.
 const PASOS: usize = 200;
 
@@ -193,7 +199,13 @@ pub struct Dibujo {
     version: u64,
     guardada: u64,
     indice: RefCell<Option<(u64, std::rc::Rc<Indice>)>>,
+    /// Que cambio en cada version (`None`: algo que no es de entidades, como
+    /// una capa, que obliga a mirarlo todo). Las ultimas [`BITACORA`].
+    bitacora: std::collections::VecDeque<(u64, Option<Vec<Handle>>)>,
 }
+
+/// Cuantas versiones recuerda [`Dibujo::cambios_desde`].
+const BITACORA: usize = 256;
 
 impl Dibujo {
     pub fn de_documento(doc: CadDocument, ruta: Option<PathBuf>) -> Dibujo {
@@ -205,6 +217,7 @@ impl Dibujo {
             version: 1,
             guardada: 1,
             indice: RefCell::new(None),
+            bitacora: std::collections::VecDeque::new(),
         }
     }
 
@@ -266,6 +279,7 @@ impl Dibujo {
     /// Marca un cambio que no es de entidades (una capa, un ajuste).
     pub fn tocar(&mut self) {
         self.version += 1;
+        self.apuntar_version(None);
     }
 
     pub fn entidad(&self, h: Handle) -> Option<&EntityType> {
@@ -312,8 +326,48 @@ impl Dibujo {
             }
             self.deshecho.clear();
             self.version += 1;
+            let hs = self.hecho.last().map(Paso::handles);
+            self.apuntar_version(hs);
         }
         r
+    }
+
+    fn apuntar_version(&mut self, hs: Option<Vec<Handle>>) {
+        self.bitacora.push_back((self.version, hs));
+        while self.bitacora.len() > BITACORA {
+            self.bitacora.pop_front();
+        }
+    }
+
+    /// **Que entidades cambiaron** (anadidas, cambiadas o quitadas) desde la
+    /// version `v`, sin repetir. `None` si no se sabe (paso algo que no es de
+    /// entidades, como apagar una capa, o `v` es demasiado vieja): entonces
+    /// hay que mirarlo todo.
+    pub fn cambios_desde(&self, v: u64) -> Option<Vec<Handle>> {
+        if v == self.version {
+            return Some(Vec::new());
+        }
+        if v > self.version {
+            return None;
+        }
+        // La bitacora tiene que llegar hasta la version siguiente a `v`.
+        let primera = self.bitacora.front()?.0;
+        if primera > v + 1 {
+            return None;
+        }
+        let mut vistos = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (ver, hs) in &self.bitacora {
+            if *ver <= v {
+                continue;
+            }
+            for h in hs.as_ref()? {
+                if vistos.insert(*h) {
+                    out.push(*h);
+                }
+            }
+        }
+        Some(out)
     }
 
     pub fn se_puede_deshacer(&self) -> bool {
@@ -331,8 +385,10 @@ impl Dibujo {
             poner(&mut self.doc, c.handle, c.antes.clone());
         }
         let nombre = paso.nombre.clone();
+        let hs = paso.handles();
         self.deshecho.push(paso);
         self.version += 1;
+        self.apuntar_version(Some(hs));
         Some(nombre)
     }
 
@@ -342,8 +398,10 @@ impl Dibujo {
             poner(&mut self.doc, c.handle, c.despues.clone());
         }
         let nombre = paso.nombre.clone();
+        let hs = paso.handles();
         self.hecho.push(paso);
         self.version += 1;
+        self.apuntar_version(Some(hs));
         Some(nombre)
     }
 
@@ -594,6 +652,29 @@ mod pruebas {
         // Una orden que no cambia nada no deja paso.
         d.editar("NADA", |_| {});
         assert_eq!(d.deshacer().as_deref(), Some("MOVER"));
+    }
+
+    #[test]
+    fn cambios_desde_una_version() {
+        let mut d = Dibujo::nuevo();
+        let v0 = d.version();
+        let a = d
+            .editar("A", |t| t.anadir(linea(0.0, 0.0, 1.0, 0.0)))
+            .unwrap();
+        let v1 = d.version();
+        let b = d
+            .editar("B", |t| t.anadir(linea(0.0, 1.0, 1.0, 1.0)))
+            .unwrap();
+        assert_eq!(d.cambios_desde(v1), Some(vec![b]));
+        assert_eq!(d.cambios_desde(v0), Some(vec![a, b]));
+        assert_eq!(d.cambios_desde(d.version()), Some(vec![]));
+        d.deshacer();
+        assert_eq!(d.cambios_desde(v1), Some(vec![b]));
+        // Algo que no es de entidades: no se sabe.
+        d.con_capa("0", |l| l.turn_off());
+        assert_eq!(d.cambios_desde(v1), None);
+        // Caso negativo: una version que aun no existe.
+        assert_eq!(d.cambios_desde(d.version() + 5), None);
     }
 
     #[test]
