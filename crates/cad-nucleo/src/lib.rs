@@ -5,6 +5,9 @@
 //! Rust puro sobre `opencadcodec` (OpenCADStudio): se prueba en cualquier
 //! sistema; la ventana de Windows esta en `apps/cadpixpin`.
 
+pub mod biblioteca;
+pub mod bloque;
+pub mod contorno;
 pub mod dibujo;
 pub mod enganche;
 pub mod entrada;
@@ -16,6 +19,7 @@ pub mod herramientas;
 pub mod metrados;
 pub mod operaciones;
 pub mod ordenes;
+pub mod patrones;
 pub mod seleccion;
 pub mod sesion;
 
