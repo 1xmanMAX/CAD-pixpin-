@@ -13,6 +13,7 @@ use cad_nucleo::ordenes::{self, Grupo, Id};
 use cad_nucleo::{Dibujo, Sesion, formas, metrados};
 use pixpin_render::{Color, Pintor, RectF};
 
+use crate::encima::{ClaveAjuste, Memo, Resalte};
 use crate::plano::{Camara, Plano};
 use crate::tema;
 use crate::ui::{self, Accion, Estilo, Interruptor, Zona, rect};
@@ -81,6 +82,10 @@ pub struct Mesa {
     /// de pintar, que se lleva el plano mientras tanto).
     pub hay_plano: bool,
     pub caja_plano: Option<[f64; 4]>,
+    /// Lo elegido listo para resaltar y el ultimo enganche buscado (ver
+    /// [`crate::encima`]).
+    resalte: Resalte,
+    ajuste: Memo<ClaveAjuste, (P, Option<Enganche>)>,
 }
 
 impl Mesa {
@@ -113,6 +118,8 @@ impl Mesa {
             enganche: None,
             hay_plano: false,
             caja_plano: None,
+            resalte: Resalte::default(),
+            ajuste: Memo::default(),
         }
     }
 
@@ -141,8 +148,7 @@ impl Mesa {
 
     /// Pide dibujar lo que cambio (llamar cada vuelta del bucle).
     pub fn al_dia(&mut self) {
-        let v = self.sesion.dibujo.version();
-        self.plano.pedir(v, &self.sesion.dibujo.doc);
+        self.plano.pedir(&self.sesion.dibujo);
     }
 
     /// El plano entero en la zona de dibujo.
@@ -344,20 +350,37 @@ impl Mesa {
             self.encuadrar(w, h, e);
         }
         let mut zonas = Vec::new();
-        let (wd, hd) = (w as f64, h as f64);
-        let a_pantalla = |q: P| self.camara.pantalla(q, wd, hd);
-
         // Lo que hay encima del plano, recortado a su zona.
         let cursor_dibujo = self.cursor.filter(|(x, y)| ui::dentro(&d.dibujo, *x, *y));
         let ajustado = cursor_dibujo.map(|(x, y)| {
             let crudo = self.a_plano(x, y, w, h);
-            if self.sesion.pide_objetos() && self.sesion.activa().is_some() {
-                (crudo, None)
-            } else {
-                self.sesion.ajustar(crudo, self.radio_enganche(e))
-            }
+            let radio = self.radio_enganche(e);
+            let sin = self.sesion.pide_objetos() && self.sesion.activa().is_some();
+            // Si el cursor y lo demas siguen igual, el enganche de antes.
+            let clave = ClaveAjuste::de(&self.sesion, crudo, radio, sin);
+            let sesion = &self.sesion;
+            self.ajuste.o_calcular(clave, || {
+                if sin {
+                    (crudo, None)
+                } else {
+                    sesion.ajustar(crudo, radio)
+                }
+            })
         });
         self.enganche = ajustado.and_then(|a| a.1);
+        let indice = self.sesion.dibujo.indice();
+        let version = self.sesion.dibujo.version();
+        self.resalte
+            .al_dia(version, &self.sesion.seleccion, &indice);
+        let vista = {
+            let (a, b) = (
+                self.a_plano(d.dibujo.x, d.dibujo.y + d.dibujo.alto, w, h),
+                self.a_plano(d.dibujo.x + d.dibujo.ancho, d.dibujo.y, w, h),
+            );
+            [a[0], a[1], b[0], b[1]]
+        };
+        let (wd, hd) = (w as f64, h as f64);
+        let a_pantalla = |q: P| self.camara.pantalla(q, wd, hd);
         p.con_recorte(d.dibujo, |p| {
             if !self.hay_plano {
                 let t = match &self.plano.error {
@@ -373,7 +396,7 @@ impl Mesa {
                     tema::TEXTO_SUAVE,
                 );
             }
-            self.pintar_seleccion(p, &a_pantalla, e);
+            self.pintar_seleccion(p, &a_pantalla, e, &vista);
             if let Some((q, _)) = ajustado {
                 let previa = self.sesion.previa(q);
                 for f in &previa.formas {
@@ -429,15 +452,38 @@ impl Mesa {
         zonas
     }
 
-    fn pintar_seleccion(&self, p: &Pintor, a_pantalla: &impl Fn(P) -> (f32, f32), e: f32) {
+    /// Lo elegido que se ve en `vista`: lo mayor primero y, con mucho
+    /// elegido (Ctrl+A), hasta un tope y un recuadro de todo.
+    fn pintar_seleccion(
+        &self,
+        p: &Pintor,
+        a_pantalla: &impl Fn(P) -> (f32, f32),
+        e: f32,
+        vista: &[f64; 4],
+    ) {
         if self.sesion.seleccion.is_empty() {
             return;
         }
+        const TOPE_FORMAS: usize = 3000;
         let ind = self.sesion.dibujo.indice();
-        for h in self.sesion.seleccion.iter().take(5000) {
-            let Some(en) = ind.de_handle(*h) else {
+        // Con mucho elegido, lo que en pantalla no llega a dos pixeles no se
+        // resalta (el recuadro de todo dice que esta elegido).
+        let minimo = if self.sesion.seleccion.len() > TOPE_FORMAS {
+            self.camara.px * 2.0
+        } else {
+            0.0
+        };
+        let (cuales, mut quedan) = self.resalte.visibles(vista, minimo, TOPE_FORMAS);
+        let mut trazadas = 0;
+        for k in cuales {
+            let Some(en) = ind.entradas.get(k as usize) else {
                 continue;
             };
+            trazadas += en.formas.len().max(1);
+            if trazadas > TOPE_FORMAS {
+                quedan = true;
+                break;
+            }
             if en.formas.is_empty() {
                 let (x0, y0) = a_pantalla([en.caja[0], en.caja[3]]);
                 let (x1, y1) = a_pantalla([en.caja[2], en.caja[1]]);
@@ -446,6 +492,11 @@ impl Mesa {
             for f in &en.formas {
                 trazar_forma(p, f, a_pantalla, self.camara.px, 2.0 * e, tema::ACENTO);
             }
+        }
+        if quedan && let Some(c) = self.resalte.total {
+            let (x0, y0) = a_pantalla([c[0], c[3]]);
+            let (x1, y1) = a_pantalla([c[2], c[1]]);
+            p.trazar_discontinuo(rect(x0, y0, x1 - x0, y1 - y0), 1.5 * e, tema::ACENTO);
         }
         // Los pinzamientos.
         let lado = 7.0 * e;

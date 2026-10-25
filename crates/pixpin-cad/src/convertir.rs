@@ -367,6 +367,50 @@ impl<'d> Convertidor<'d> {
     }
 
     fn recorrer(&mut self) {
+        let (espacio, _) = Self::espacio(self.doc);
+        self.recorrer_estas(espacio);
+    }
+
+    /// **Lo que se dibuja del plano**: las entidades del espacio modelo o, si
+    /// ahi no hay nada que dibujar, las del papel (el `bool` dice si son del
+    /// papel).
+    pub fn espacio(doc: &CadDocument) -> (Vec<&EntityType>, bool) {
+        let entidades: Vec<&EntityType> = doc.model_space_entities().collect();
+        if entidades.iter().any(|e| dibujable(e)) {
+            (entidades, false)
+        } else {
+            (doc.entities_in_block("*Paper_Space").collect(), true)
+        }
+    }
+
+    /// **Solo estas entidades**, con los bloques, las capas y los estilos del
+    /// documento: para convertir el plano a trozos (CAD-pixpin, 25-oct-2026).
+    /// Pueden no estar en el documento (la version nueva de una entidad
+    /// cambiada). Da tambien las letras ya hechas, para el siguiente trozo
+    /// ([`Convertidor::con_textos`]).
+    pub fn convertir_estas<'a>(
+        mut self,
+        entidades: impl IntoIterator<Item = &'a EntityType>,
+    ) -> (Modelo, Cuentas, Textos)
+    where
+        'd: 'a,
+    {
+        self.recorrer_estas(entidades);
+        let cuentas = self.cuentas.clone();
+        (self.c.terminar(), cuentas, self.textos)
+    }
+
+    /// Con las letras ya hechas de otra conversion: no se vuelven a leer las
+    /// fuentes ni a rellenar sus letras.
+    pub fn con_textos(mut self, textos: Textos) -> Self {
+        self.textos = textos;
+        self
+    }
+
+    fn recorrer_estas<'a>(&mut self, entidades: impl IntoIterator<Item = &'a EntityType>)
+    where
+        'd: 'a,
+    {
         let raiz = Contexto {
             m: Afin::IDENTIDAD,
             capa: None,
@@ -387,13 +431,7 @@ impl<'d> Convertidor<'d> {
             0.0
         });
         self.c.unidades = self.doc.header.insertion_units.max(0) as u32;
-        let entidades: Vec<&EntityType> = self.doc.model_space_entities().collect();
-        let espacio: Vec<&EntityType> = if entidades.iter().any(|e| dibujable(e)) {
-            entidades
-        } else {
-            self.doc.entities_in_block("*Paper_Space").collect()
-        };
-        for e in espacio {
+        for e in entidades {
             if self.c.lleno() {
                 break;
             }

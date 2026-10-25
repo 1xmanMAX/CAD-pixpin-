@@ -1,14 +1,22 @@
 //! **El plano en la tarjeta grafica**: el dibujo se pasa a rayas y
 //! triangulos con el convertidor de `pixpin-cad` (el mismo del visor de
-//! PixPin) en otro hilo, cada vez que cambia, y se sube cuando llega. La
-//! camara es la de la mesa, en coordenadas absolutas del dibujo.
+//! PixPin) en otros hilos y se sube cuando llega. Va partido en cubos
+//! ([`crate::cubos`]): al editar solo se rehacen los cubos tocados, y
+//! mientras tanto se ve lo de antes. La camara es la de la mesa, en
+//! coordenadas absolutas del dibujo.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
-use cad_nucleo::geo::{Caja, P};
-use cad_nucleo::opencadcodec::CadDocument;
+use cad_nucleo::Dibujo;
+use cad_nucleo::geo::{self, Caja, P};
+use cad_nucleo::opencadcodec::{CadDocument, EntityType};
+use pixpin_cad::convertir::Convertidor;
 use pixpin_cad::gpu::{Gpu, PlanoGpu, Vista};
 use pixpin_cad::modelo::Modelo;
+use pixpin_cad::texto::Textos;
+
+use crate::cubos::{self, CAPACIDAD, CRECER, Cambio, Reparto};
 
 /// Que punto del dibujo esta en el centro de la ventana y cuantas unidades
 /// mide un pixel.
@@ -69,9 +77,107 @@ impl Camara {
     }
 }
 
-/// Un pedido al hilo que convierte: la version del dibujo y una copia.
-type Pedido = (u64, Box<CadDocument>);
-type Llegado = (u64, Result<Modelo, String>);
+// ------------------------------------------------------------ los cubos
+
+/// Un pedido al hilo que convierte.
+enum Pedido {
+    /// Todo de nuevo, con una copia del documento.
+    Todo { version: u64, doc: Box<CadDocument> },
+    /// Lo que cambio desde el pedido anterior.
+    Cambios { version: u64, cambios: Vec<Cambio> },
+}
+
+/// **Un cubo ya convertido**, partido en lo de abajo (rellenos y
+/// sombreados) y lo de encima (rayas, arcos y letras): se dibujan todos los
+/// fondos antes que cualquier raya, como cuando el plano era un solo modelo.
+struct Hecho {
+    fondo: Option<Modelo>,
+    encima: Option<Modelo>,
+    /// Todo lo que dibuja (para saltarse el cubo si no se ve) y lo que
+    /// importa (para encuadrar), en coordenadas del dibujo.
+    caja: Caja,
+    util: Caja,
+}
+
+/// Un cubo convertido (`None`: no dibuja nada) o por que no se pudo.
+type Convertido = Result<Option<Hecho>, String>;
+
+enum Llegado {
+    /// Todos los cubos (la particion puede ser otra).
+    Todo {
+        version: u64,
+        cubos: Vec<Convertido>,
+    },
+    /// Solo estos; ahora hay `total`.
+    Cubos {
+        version: u64,
+        cubos: Vec<(usize, Convertido)>,
+        total: usize,
+    },
+    /// Lo que cambio en esta version no se puede hacer por partes.
+    PideTodo(u64),
+}
+
+/// Un cubo en la tarjeta: cada parte con su origen.
+struct CuboGpu {
+    caja: Caja,
+    util: Caja,
+    fondo: Option<(PlanoGpu, [f64; 2])>,
+    encima: Option<(PlanoGpu, [f64; 2])>,
+}
+
+/// **El plano en la tarjeta**, en cubos.
+pub struct PlanoSubido {
+    cubos: Vec<Option<CuboGpu>>,
+    /// Lo que importa del plano, para encuadrar.
+    pub caja: Option<Caja>,
+}
+
+impl PlanoSubido {
+    /// **Lo que hay que dibujar** con la camara `c` en una ventana `w` x `h`:
+    /// los cubos que se ven, primero sus fondos y luego sus rayas.
+    pub fn planos(&self, c: &Camara, w: u32, h: u32) -> Vec<(&PlanoGpu, Vista)> {
+        let vista = caja_de_camara(c, w, h);
+        let visibles: Vec<&CuboGpu> = self
+            .cubos
+            .iter()
+            .flatten()
+            .filter(|k| geo::se_tocan(&k.caja, &vista))
+            .collect();
+        let mut v = Vec::with_capacity(visibles.len() * 2);
+        for fondo in [true, false] {
+            for k in &visibles {
+                if let Some((p, origen)) = if fondo { &k.fondo } else { &k.encima } {
+                    v.push((p, vista_de(*origen, c, w, h)));
+                }
+            }
+        }
+        v
+    }
+
+    fn rehacer_caja(&mut self) {
+        let mut total = geo::CAJA_VACIA;
+        for k in self.cubos.iter().flatten() {
+            total = geo::unir_cajas(total, k.util);
+        }
+        self.caja = geo::caja_valida(&total).then_some(total);
+    }
+}
+
+/// Lo que ve la camara, en coordenadas del dibujo (con un margen de un par
+/// de pixeles).
+pub fn caja_de_camara(c: &Camara, w: u32, h: u32) -> Caja {
+    let (mx, my) = (
+        (w.max(1) as f64 / 2.0 + 2.0) * c.px,
+        (h.max(1) as f64 / 2.0 + 2.0) * c.px,
+    );
+    [
+        c.centro[0] - mx,
+        c.centro[1] - my,
+        c.centro[0] + mx,
+        c.centro[1] + my,
+    ]
+}
 
 /// **El plano subido** y el hilo que lo convierte.
 pub struct Plano {
@@ -81,7 +187,12 @@ pub struct Plano {
     pub pedida: u64,
     /// La version que se ve.
     pub vista: u64,
-    pub gpu: Option<(Modelo, PlanoGpu)>,
+    /// La version del ultimo pedido entero (lo que el hilo pida de antes ya
+    /// esta pedido).
+    entero: u64,
+    /// El hilo pidio convertirlo todo.
+    rehacer: bool,
+    pub gpu: Option<PlanoSubido>,
     pub error: Option<String>,
 }
 
@@ -91,80 +202,453 @@ impl Plano {
         let (tx, llega) = channel::<Llegado>();
         let _ = std::thread::Builder::new()
             .name("plano-convertir".into())
-            // El convertidor recorre bloques dentro de bloques: pila holgada.
-            .stack_size(64 * 1024 * 1024)
-            .spawn(move || {
-                while let Ok(mut p) = rx.recv() {
-                    // Solo el ultimo pedido: los de en medio ya no valen.
-                    while let Ok(q) = rx.try_recv() {
-                        p = q;
-                    }
-                    let (version, doc) = p;
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        pixpin_cad::convertir::Convertidor::nuevo(&doc)
-                            .convertir()
-                            .0
-                    }))
-                    .map_err(|_| "el plano no se pudo dibujar".to_string());
-                    if tx.send((version, r)).is_err() {
-                        break;
-                    }
-                }
-            });
+            .spawn(move || convertir_en_cubos(rx, tx));
         Plano {
             pedir,
             llega,
             pedida: 0,
             vista: 0,
+            entero: 0,
+            rehacer: false,
             gpu: None,
             error: None,
         }
     }
 
-    /// Pide dibujar el dibujo de la version `v` si aun no se pidio.
-    pub fn pedir(&mut self, v: u64, doc: &CadDocument) {
-        if v != self.pedida {
-            self.pedida = v;
-            let _ = self.pedir.send((v, Box::new(doc.clone())));
+    /// **Pide dibujar el dibujo como esta**, si aun no se pidio: solo lo que
+    /// cambio desde el pedido anterior (si se sabe) o todo.
+    pub fn pedir(&mut self, d: &Dibujo) {
+        let v = d.version();
+        if v == self.pedida && !self.rehacer {
+            return;
         }
+        let cambios = if self.rehacer || self.pedida == 0 {
+            None
+        } else {
+            d.cambios_desde(self.pedida)
+        };
+        let pedido = match cambios {
+            Some(hs) => Pedido::Cambios {
+                version: v,
+                cambios: hs
+                    .into_iter()
+                    .map(|h| (h, d.doc.get_entity_arc(h)))
+                    .collect(),
+            },
+            None => {
+                self.entero = v;
+                self.rehacer = false;
+                Pedido::Todo {
+                    version: v,
+                    doc: Box::new(d.doc.clone()),
+                }
+            }
+        };
+        self.pedida = v;
+        let _ = self.pedir.send(pedido);
     }
 
     /// Si esta convirtiendo (para seguir mirando el canal).
     pub fn esperando(&self) -> bool {
-        self.pedida != self.vista
+        self.pedida != self.vista || self.rehacer
     }
 
-    /// Sube lo que haya llegado. Dice si cambio lo que se ve.
+    /// **Sube lo que haya llegado**; hasta entonces se ve lo de antes. Dice
+    /// si cambio lo que se ve.
     pub fn recibir(&mut self, gpu: &Gpu) -> bool {
         let mut cambio = false;
-        while let Ok((v, r)) = self.llega.try_recv() {
-            self.vista = v;
-            match r {
-                Ok(m) => match gpu.subir(&m) {
-                    Ok(p) => {
-                        self.gpu = Some((m, p));
-                        self.error = None;
-                    }
-                    Err(e) => self.error = Some(format!("el plano no cabe en la tarjeta: {e}")),
-                },
-                Err(e) => self.error = Some(e),
-            }
+        while let Ok(l) = self.llega.try_recv() {
             cambio = true;
+            match l {
+                Llegado::PideTodo(v) => {
+                    if v > self.entero {
+                        self.rehacer = true;
+                    }
+                }
+                Llegado::Todo { version, cubos } => {
+                    self.vista = version;
+                    self.error = None;
+                    let mut nuevo = PlanoSubido {
+                        cubos: Vec::with_capacity(cubos.len()),
+                        caja: None,
+                    };
+                    for c in cubos {
+                        let k = self.subir(gpu, c);
+                        nuevo.cubos.push(k);
+                    }
+                    nuevo.rehacer_caja();
+                    self.gpu = Some(nuevo);
+                }
+                Llegado::Cubos {
+                    version,
+                    cubos,
+                    total,
+                } => {
+                    self.vista = version;
+                    let Some(mut g) = self.gpu.take() else {
+                        self.rehacer = true;
+                        continue;
+                    };
+                    g.cubos.resize_with(total, || None);
+                    for (k, c) in cubos {
+                        let subido = self.subir(gpu, c);
+                        if let Some(x) = g.cubos.get_mut(k) {
+                            *x = subido;
+                        }
+                    }
+                    g.rehacer_caja();
+                    self.gpu = Some(g);
+                }
+            }
         }
         cambio
     }
+
+    fn subir(&mut self, gpu: &Gpu, c: Convertido) -> Option<CuboGpu> {
+        let h = match c {
+            Ok(h) => h?,
+            Err(e) => {
+                self.error = Some(e);
+                return None;
+            }
+        };
+        let mut parte = |m: Option<Modelo>| -> Option<(PlanoGpu, [f64; 2])> {
+            let m = m?;
+            match gpu.subir(&m) {
+                Ok(p) => Some((p, m.origen)),
+                Err(e) => {
+                    self.error = Some(format!("el plano no cabe en la tarjeta: {e}"));
+                    None
+                }
+            }
+        };
+        let fondo = parte(h.fondo);
+        let encima = parte(h.encima);
+        Some(CuboGpu {
+            caja: h.caja,
+            util: h.util,
+            fondo,
+            encima,
+        })
+    }
 }
 
-/// La vista del sombreador para el modelo `m` con la camara `c`.
-pub fn vista_de(m: &Modelo, c: &Camara, w: u32, h: u32) -> Vista {
+/// Lo que el hilo sabe del dibujo: el documento del ultimo dibujo entero
+/// (sus bloques, capas y estilos) y las entidades de cada cubo, al dia.
+struct Estado {
+    base: Arc<CadDocument>,
+    reparto: Reparto,
+    /// Si se puede rehacer por partes (no, si se dibuja el espacio papel).
+    por_partes: bool,
+}
+
+/// **El hilo que convierte**: atiende los pedidos en orden (juntando los
+/// que se acumulan) y reparte los cubos entre los obreros.
+fn convertir_en_cubos(rx: Receiver<Pedido>, tx: Sender<Llegado>) {
+    let obreros = Obreros::nuevos();
+    let mut estado: Option<Estado> = None;
+    // Sube con cada dibujo entero: los obreros olvidan las letras de antes.
+    let mut generacion = 0u64;
+    while let Ok(p) = rx.recv() {
+        let mut cola = vec![p];
+        while let Ok(q) = rx.try_recv() {
+            cola.push(q);
+        }
+        for p in juntar(cola) {
+            let r = match p {
+                Pedido::Todo { version, doc } => {
+                    generacion += 1;
+                    let base: Arc<CadDocument> = Arc::from(doc);
+                    let (espacio, papel) = Convertidor::espacio(&base);
+                    let por_partes = !papel || espacio.is_empty();
+                    let entidades: Vec<Arc<EntityType>> = espacio
+                        .iter()
+                        .filter_map(|e| base.get_entity_arc(e.common().handle))
+                        .collect();
+                    let reparto = Reparto::nuevo(entidades, CAPACIDAD);
+                    let cubos = obreros.todos(&base, &reparto, generacion);
+                    estado = Some(Estado {
+                        base,
+                        reparto,
+                        por_partes,
+                    });
+                    Llegado::Todo { version, cubos }
+                }
+                Pedido::Cambios { version, cambios } => {
+                    let se_puede = estado.as_ref().is_some_and(|est| {
+                        est.por_partes
+                            && cambios.iter().all(|(h, e)| {
+                                cubos::admite(&est.base, &est.reparto, *h, e.as_deref())
+                            })
+                    });
+                    match estado.as_mut() {
+                        Some(est) if se_puede => {
+                            let tocados = est.reparto.aplicar(cambios);
+                            if est.reparto.mayor() > CRECER * CAPACIDAD {
+                                // Se dibujo mucho en un sitio: se parte otra vez.
+                                let r = std::mem::replace(
+                                    &mut est.reparto,
+                                    Reparto::nuevo(Vec::new(), CAPACIDAD),
+                                );
+                                est.reparto = Reparto::nuevo(r.todas(), CAPACIDAD);
+                                let cubos = obreros.todos(&est.base, &est.reparto, generacion);
+                                Llegado::Todo { version, cubos }
+                            } else {
+                                let cubos = obreros.convertir(
+                                    &est.base,
+                                    &est.reparto.cubos,
+                                    tocados,
+                                    generacion,
+                                );
+                                Llegado::Cubos {
+                                    version,
+                                    cubos,
+                                    total: est.reparto.cubos.len(),
+                                }
+                            }
+                        }
+                        _ => {
+                            estado = None;
+                            Llegado::PideTodo(version)
+                        }
+                    }
+                }
+            };
+            if tx.send(r).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// **Junta los pedidos acumulados**: desde el ultimo entero, y los cambios
+/// seguidos en uno (de cada entidad, como quedo al final).
+fn juntar(cola: Vec<Pedido>) -> Vec<Pedido> {
+    let desde = cola
+        .iter()
+        .rposition(|p| matches!(p, Pedido::Todo { .. }))
+        .unwrap_or(0);
+    let mut out: Vec<Pedido> = Vec::new();
+    for p in cola.into_iter().skip(desde) {
+        match (out.last_mut(), p) {
+            (
+                Some(Pedido::Cambios { version, cambios }),
+                Pedido::Cambios {
+                    version: v,
+                    cambios: nuevos,
+                },
+            ) => {
+                *version = v;
+                cubos::juntar_cambios(cambios, nuevos);
+            }
+            (_, p) => out.push(p),
+        }
+    }
+    out
+}
+
+/// Un cubo que convertir.
+struct Tarea {
+    doc: Arc<CadDocument>,
+    k: usize,
+    entidades: Vec<Arc<EntityType>>,
+    generacion: u64,
+    vuelta: Sender<(usize, Convertido)>,
+}
+
+/// **Los hilos que convierten los cubos**: uno menos que los del equipo
+/// (la ventana tambien quiere el suyo), de uno a cuatro. Cada uno guarda
+/// sus letras ya hechas para el siguiente cubo.
+struct Obreros {
+    tareas: Sender<Tarea>,
+}
+
+impl Obreros {
+    fn nuevos() -> Obreros {
+        let (tareas, rx) = channel::<Tarea>();
+        let rx = Arc::new(Mutex::new(rx));
+        let n = std::thread::available_parallelism()
+            .map_or(2, |n| n.get())
+            .saturating_sub(1)
+            .clamp(1, 4);
+        for i in 0..n {
+            let rx = rx.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("plano-cubo-{i}"))
+                // El convertidor recorre bloques dentro de bloques: pila holgada.
+                .stack_size(64 * 1024 * 1024)
+                .spawn(move || obrero(&rx));
+        }
+        Obreros { tareas }
+    }
+
+    fn todos(&self, doc: &Arc<CadDocument>, r: &Reparto, generacion: u64) -> Vec<Convertido> {
+        let n = r.cubos.len();
+        let mut out: Vec<Convertido> = (0..n).map(|_| Ok(None)).collect();
+        for (k, c) in self.convertir(doc, &r.cubos, 0..n, generacion) {
+            out[k] = c;
+        }
+        out
+    }
+
+    /// Convierte los cubos `cuales` (los grandes primero, para repartir
+    /// mejor) y espera a que esten todos.
+    fn convertir(
+        &self,
+        doc: &Arc<CadDocument>,
+        cubos: &[Vec<Arc<EntityType>>],
+        cuales: impl IntoIterator<Item = usize>,
+        generacion: u64,
+    ) -> Vec<(usize, Convertido)> {
+        let mut cuales: Vec<usize> = cuales.into_iter().filter(|k| *k < cubos.len()).collect();
+        cuales.sort_by_key(|k| std::cmp::Reverse(cubos[*k].len()));
+        let (vuelta, llegan) = channel();
+        for k in cuales {
+            let _ = self.tareas.send(Tarea {
+                doc: doc.clone(),
+                k,
+                entidades: cubos[k].clone(),
+                generacion,
+                vuelta: vuelta.clone(),
+            });
+        }
+        // Sin esta copia, el canal se cierra cuando acaban todas (o si un
+        // obrero se muere).
+        drop(vuelta);
+        let mut hechos: Vec<(usize, Convertido)> = llegan.iter().collect();
+        hechos.sort_by_key(|h| h.0);
+        hechos
+    }
+}
+
+fn obrero(rx: &Mutex<Receiver<Tarea>>) {
+    let mut letras: Option<(u64, Textos)> = None;
+    loop {
+        let t = {
+            let Ok(cola) = rx.lock() else { return };
+            match cola.recv() {
+                Ok(t) => t,
+                Err(_) => return,
+            }
+        };
+        let previas = letras
+            .take()
+            .filter(|(g, _)| *g == t.generacion)
+            .map(|(_, l)| l);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut c = Convertidor::nuevo(&t.doc);
+            if let Some(l) = previas {
+                c = c.con_textos(l);
+            }
+            let (m, _, l) = c.convertir_estas(t.entidades.iter().map(|e| e.as_ref()));
+            (partir_modelo(m), l)
+        }));
+        let r = match r {
+            Ok((h, l)) => {
+                letras = Some((t.generacion, l));
+                Ok(h)
+            }
+            Err(_) => Err("el plano no se pudo dibujar".to_string()),
+        };
+        let _ = t.vuelta.send((t.k, r));
+    }
+}
+
+/// **Parte un modelo** en lo de abajo y lo de encima, cada uno con solo
+/// sus vertices.
+fn partir_modelo(m: Modelo) -> Option<Hecho> {
+    if m.vacio() {
+        return None;
+    }
+    let caja = [
+        m.caja[0] as f64 + m.origen[0],
+        m.caja[1] as f64 + m.origen[1],
+        m.caja[2] as f64 + m.origen[0],
+        m.caja[3] as f64 + m.origen[1],
+    ];
+    let util = crate::mesa::caja_de_modelo(&m);
+    let fondo = !m.triangulos.is_empty() || !m.triangulos_trama.is_empty();
+    let encima = !m.lineas.is_empty() || !m.letras.is_empty() || !m.arcos.is_empty();
+    let (fondo, encima) = match (fondo, encima) {
+        (true, false) => (Some(m), None),
+        (false, _) => (None, Some(m)),
+        (true, true) => {
+            let Modelo {
+                origen,
+                caja,
+                vertices,
+                lineas,
+                triangulos,
+                tramos_lineas,
+                tramos_triangulos,
+                vertices_trama,
+                triangulos_trama,
+                tramos_trama,
+                tramas,
+                familias,
+                malla_letras,
+                glifos,
+                letras,
+                tramos_letras,
+                arcos,
+                tramos_arcos,
+                unidades,
+                sin_dibujar,
+            } = m;
+            let (vf, tf) = cubos::compactar(&vertices, &triangulos);
+            let (ve, le) = cubos::compactar(&vertices, &lineas);
+            (
+                Some(Modelo {
+                    origen,
+                    caja,
+                    vertices: vf,
+                    triangulos: tf,
+                    tramos_triangulos,
+                    vertices_trama,
+                    triangulos_trama,
+                    tramos_trama,
+                    tramas,
+                    familias,
+                    unidades,
+                    ..Default::default()
+                }),
+                Some(Modelo {
+                    origen,
+                    caja,
+                    vertices: ve,
+                    lineas: le,
+                    tramos_lineas,
+                    malla_letras,
+                    glifos,
+                    letras,
+                    tramos_letras,
+                    arcos,
+                    tramos_arcos,
+                    unidades,
+                    sin_dibujar,
+                    ..Default::default()
+                }),
+            )
+        }
+    };
+    Some(Hecho {
+        fondo,
+        encima,
+        caja,
+        util,
+    })
+}
+
+/// La vista del sombreador para un modelo con origen `origen` y la camara `c`.
+pub fn vista_de(origen: [f64; 2], c: &Camara, w: u32, h: u32) -> Vista {
     Vista {
         escala: [
             (2.0 / (w.max(1) as f64 * c.px)) as f32,
             (2.0 / (h.max(1) as f64 * c.px)) as f32,
         ],
         centro: [
-            (c.centro[0] - m.origen[0]) as f32,
-            (c.centro[1] - m.origen[1]) as f32,
+            (c.centro[0] - origen[0]) as f32,
+            (c.centro[1] - origen[1]) as f32,
         ],
         // El color 7 (blanco o negro segun el fondo): blanco sobre oscuro.
         color7: [1.0; 4],
@@ -177,6 +661,51 @@ pub fn vista_de(m: &Modelo, c: &Camara, w: u32, h: u32) -> Vista {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+    use cad_nucleo::opencadcodec::Handle;
+
+    #[test]
+    fn de_los_pedidos_acumulados_valen_desde_el_ultimo_entero_y_los_cambios_juntos() {
+        let cambio = |v: u64, h: u64| Pedido::Cambios {
+            version: v,
+            cambios: vec![(Handle::new(h), None)],
+        };
+        let todo = |v: u64| Pedido::Todo {
+            version: v,
+            doc: Box::new(CadDocument::new()),
+        };
+        let resumen = |ps: Vec<Pedido>| -> Vec<(u64, usize)> {
+            ps.iter()
+                .map(|p| match p {
+                    Pedido::Todo { version, .. } => (*version, usize::MAX),
+                    Pedido::Cambios { version, cambios } => (*version, cambios.len()),
+                })
+                .collect()
+        };
+        let j = juntar(vec![
+            cambio(2, 1),
+            todo(3),
+            cambio(4, 1),
+            cambio(5, 2),
+            cambio(6, 1),
+        ]);
+        assert_eq!(resumen(j), vec![(3, usize::MAX), (6, 2)]);
+        let j = juntar(vec![cambio(2, 1), cambio(3, 1)]);
+        assert_eq!(resumen(j), vec![(3, 1)]);
+    }
+
+    #[test]
+    fn la_caja_de_la_camara_es_lo_que_se_ve() {
+        let c = Camara {
+            centro: [100.0, 50.0],
+            px: 0.5,
+        };
+        let k = caja_de_camara(&c, 800, 600);
+        // 400 x 300 pixeles a cada lado, mas el margen de dos.
+        assert_eq!(
+            k,
+            [100.0 - 201.0, 50.0 - 151.0, 100.0 + 201.0, 50.0 + 151.0]
+        );
+    }
 
     #[test]
     fn la_camara_va_y_vuelve() {

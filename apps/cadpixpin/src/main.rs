@@ -7,8 +7,14 @@
 
 #[cfg(windows)]
 mod bim;
+// Lo portable del plano en cubos y de lo que se pinta encima (se prueba en
+// cualquier sistema).
+#[cfg_attr(not(windows), allow(dead_code))]
+mod cubos;
 #[cfg(windows)]
 mod dialogos;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod encima;
 #[cfg(windows)]
 mod inicio;
 #[cfg(windows)]
