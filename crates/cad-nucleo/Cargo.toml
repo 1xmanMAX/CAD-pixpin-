@@ -1,0 +1,33 @@
+[package]
+name = "cad-nucleo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "El nucleo de edicion de CAD-pixpin: ordenes, enganches, deshacer y especialidades, sobre opencadcodec"
+
+[dependencies]
+# El mismo lector de OpenCADStudio que usa pixpin-cad (misma revision): lee
+# y ESCRIBE DWG y DXF, y trae mover, girar, escalar y simetria para todas las
+# entidades. Rust puro: este crate se prueba tambien fuera de Windows.
+opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac", features = [
+    # IMPORTAR3D: STL, OBJ, glTF/GLB, FBX y COLLADA como mallas (solo anade
+    # quick-xml, MIT, para el COLLADA).
+    "import",
+] }
+# Descomprimir los flujos de los PDF que se importan y comprimir los que se
+# exportan (`formatos::pdf`). Ya estaba en el arbol (opencadcodec, pixpin-pdf).
+flate2 = "1.1"
+# Leer los SVG que se importan (`formatos::svg`). Ya estaba en el arbol
+# (pixpin-bim). MIT o Apache-2.0, sin dependencias.
+roxmltree = "0.20"
+# Los datos de los modelos BIM (Revit con rvt-rs, IFC con ifc-lite) para
+# REVITAPLANTA y EXPLORARBIM. No depende de este crate (sin ciclos).
+cad-bim-datos = { path = "../cad-bim-datos" }
+
+[dev-dependencies]
+# Las pruebas de EXPORTAR3D vuelven a leer el IFC escrito con el mismo lector
+# que usa la app (ifc-lite, MPL-2.0, ya en pixpin-bim).
+ifc-lite-processing = "20.3"
+# Leer el JSON del glTF escrito (MIT/Apache, ya en el arbol).
+serde_json = "1"

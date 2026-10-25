@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  formato:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Formato
+        run: cargo fmt --all --check
+
+  # El nucleo de edicion es Rust puro: se prueba en Linux para que siga
+  # sin depender de Windows (el dia que haya version de Mac, es lo que se lleva).
+  nucleo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p cad-nucleo -p cad-bim-datos --all-targets -- -D warnings
+      - name: Pruebas
+        run: cargo test -p cad-nucleo -p cad-bim-datos
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Pruebas
+        # Una a una, como en PixPin Max: varias toman recursos del sistema.
+        run: cargo test --workspace --no-fail-fast -- --test-threads=1
+      - name: Ejecutable
+        run: cargo build -p cadpixpin --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cadpixpin-windows-x64
+          path: target/release/cadpixpin.exe

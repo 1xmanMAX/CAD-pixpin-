@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,7 +33,10 @@ pixpin-bim = { path = "crates/pixpin-bim" }
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Con «unwind» (no «abort», como PixPin Max): un DWG o un IFC roto hace saltar
+# un panico dentro del lector, y `catch_unwind` lo convierte en un aviso en vez
+# de cerrar la app con el trabajo sin guardar.
+panic = "unwind"
 strip = true
 opt-level = 3
 

@@ -1,0 +1,47 @@
+[package]
+name = "cadpixpin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CAD-pixpin: ver, editar y anotar planos DWG/DXF y modelos BIM"
+
+[[bin]]
+name = "cadpixpin"
+path = "src/main.rs"
+
+[dependencies]
+cad-nucleo = { path = "../../crates/cad-nucleo" }
+# Los datos de los modelos BIM para el explorador (Rust puro).
+cad-bim-datos = { path = "../../crates/cad-bim-datos" }
+tracing = "0.1"
+
+# La ventana es de Windows; fuera de alli el ejecutable solo lo dice (y las
+# pruebas de lo portable, como los recientes, corren igual).
+[target.'cfg(windows)'.dependencies]
+# El visor de planos y modelos de PixPin Max (copiado tal cual): su GPU
+# dibuja el plano en la mesa de trabajo y su ventana 3D abre los modelos BIM.
+pixpin-cad = { workspace = true }
+pixpin-bim = { workspace = true }
+# Direct2D para la interfaz y lo que se pinta encima del plano.
+pixpin-render = { workspace = true }
+# Leer los PNG y JPG de las imagenes del plano (IMAGEN) para pintarlas.
+pixpin-codec = { workspace = true }
+# Las preguntas de si/no de PixPin.
+pixpin-shell = { workspace = true }
+tracing-subscriber = "0.3"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
