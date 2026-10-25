@@ -4,15 +4,21 @@
 //! estado. Todo lo de editar lo decide `cad_nucleo::Sesion`; aqui se pinta
 //! y se le pasan los clics y lo que se escribe.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use cad_nucleo::enganche::{Enganche, Tipo};
 use cad_nucleo::geo::{Forma, P};
+use cad_nucleo::herramientas::capas;
+use cad_nucleo::herramientas::vista::PedidoVista;
 use cad_nucleo::opencadcodec::EntityType;
 use cad_nucleo::ordenes::{self, Grupo, Id};
 use cad_nucleo::{Dibujo, Sesion, formas, metrados};
 use pixpin_render::{Color, Pintor, RectF};
 
+use crate::autoguardado;
 use crate::plano::{Camara, Plano};
 use crate::tema;
 use crate::ui::{self, Accion, Estilo, Interruptor, Zona, rect};
@@ -36,11 +42,22 @@ pub struct Disposicion {
     pub dibujo: RectF,
 }
 
+/// Con el historial de siempre (la mesa usa [`Mesa::disp`], que sabe si F2 lo alargo).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn disposicion(w: f32, h: f32, e: f32) -> Disposicion {
+    disposicion_con(w, h, e, tema::LINEAS_HISTORIAL)
+}
+
+/// Lineas del historial con F2 (el alto).
+pub const LINEAS_HISTORIAL_ALTO: usize = 12;
+/// Cuantas vistas recuerda ZOOM Previo.
+const VISTAS: usize = 20;
+
+/// La disposicion con `lineas` de historial en la linea de ordenes.
+pub fn disposicion_con(w: f32, h: f32, e: f32, lineas: usize) -> Disposicion {
     let alto_cinta = (tema::ALTO_PESTANAS + tema::ALTO_BOTONES) * e;
     let alto_estado = tema::ALTO_ESTADO * e;
-    let alto_ordenes =
-        (tema::ALTO_LINEA * tema::LINEAS_HISTORIAL as f32 + tema::ALTO_ORDEN + 6.0) * e;
+    let alto_ordenes = (tema::ALTO_LINEA * lineas as f32 + tema::ALTO_ORDEN + 6.0) * e;
     let ancho_panel = (tema::ANCHO_PANEL * e).min(w * 0.4);
     let abajo = alto_estado + alto_ordenes;
     let medio = (h - alto_cinta - abajo).max(0.0);
@@ -81,6 +98,21 @@ pub struct Mesa {
     /// de pintar, que se lleva el plano mientras tanto).
     pub hay_plano: bool,
     pub caja_plano: Option<[f64; 4]>,
+    /// Las vistas de antes (ZOOM Previo), la mas reciente al final.
+    vistas: Vec<Camara>,
+    /// Cuando giro la rueda por ultima vez (un giro seguido es una sola vista).
+    ultima_rueda: Option<Instant>,
+    /// F2: el historial de la linea de ordenes, alto.
+    pub historial_alto: bool,
+    /// F7: la rejilla pintada.
+    pub rejilla_visible: bool,
+    /// La primera capa que se ve en la lista (se mueve con la rueda).
+    capas_desde: usize,
+    /// Cuantas caben en la lista (lo apunta el pintado).
+    capas_caben: Cell<usize>,
+    /// Cuantos objetos hay en cada capa (en mayusculas), de una version del dibujo.
+    conteo: Option<(u64, HashMap<String, usize>)>,
+    pub autoguardado: autoguardado::Estado,
 }
 
 impl Mesa {
@@ -113,7 +145,28 @@ impl Mesa {
             enganche: None,
             hay_plano: false,
             caja_plano: None,
+            vistas: Vec::new(),
+            ultima_rueda: None,
+            historial_alto: false,
+            rejilla_visible: false,
+            capas_desde: 0,
+            capas_caben: Cell::new(usize::MAX),
+            conteo: None,
+            autoguardado: autoguardado::Estado::nuevo(),
         }
+    }
+
+    fn lineas(&self) -> usize {
+        if self.historial_alto {
+            LINEAS_HISTORIAL_ALTO
+        } else {
+            tema::LINEAS_HISTORIAL
+        }
+    }
+
+    /// Donde va cada parte, con el historial como este.
+    pub fn disp(&self, w: f32, h: f32, e: f32) -> Disposicion {
+        disposicion_con(w, h, e, self.lineas())
     }
 
     pub fn titulo(&self) -> String {
@@ -147,7 +200,10 @@ impl Mesa {
 
     /// El plano entero en la zona de dibujo.
     pub fn encuadrar(&mut self, w: f32, h: f32, e: f32) {
-        let d = disposicion(w, h, e).dibujo;
+        if self.encuadrado {
+            self.guardar_vista();
+        }
+        let d = self.disp(w, h, e).dibujo;
         let caja = self
             .sesion
             .dibujo
@@ -170,7 +226,7 @@ impl Mesa {
 
     /// Si el cursor esta sobre el plano (y se esconde la flecha).
     pub fn en_el_dibujo(&self, x: f32, y: f32, w: f32, h: f32, e: f32) -> bool {
-        ui::dentro(&disposicion(w, h, e).dibujo, x, y)
+        ui::dentro(&self.disp(w, h, e).dibujo, x, y)
     }
 
     // ------------------------------------------------------------- raton
@@ -198,6 +254,7 @@ impl Mesa {
     /// Un boton baja dentro del plano (`central`: la mano).
     pub fn bajar(&mut self, x: f32, y: f32, central: bool) {
         if central {
+            self.guardar_vista();
             self.mano = Some((x, y, self.camara));
         } else {
             self.abajo = Some(Abajo {
@@ -237,6 +294,14 @@ impl Mesa {
     }
 
     pub fn rueda(&mut self, pasos: f32, x: f32, y: f32, w: f32, h: f32) {
+        let ahora = Instant::now();
+        if self
+            .ultima_rueda
+            .is_none_or(|t| ahora.duration_since(t) > Duration::from_millis(600))
+        {
+            self.guardar_vista();
+        }
+        self.ultima_rueda = Some(ahora);
         let f = 0.8_f64.powf(pasos as f64);
         self.camara = self.camara.zoom(f, x as f64, y as f64, w as f64, h as f64);
     }
@@ -331,6 +396,7 @@ impl Mesa {
                 self.sesion.dibujo.ruta.clone().unwrap_or_default()
             }
         };
+        self.autoguardado.olvidar();
         self.sesion.avisar(format!("Guardado en {}", r.display()));
         Ok(r)
     }
@@ -339,7 +405,8 @@ impl Mesa {
 
     /// **Pinta la mesa** encima del plano ya dibujado y da las zonas de los botones.
     pub fn pintar(&mut self, p: &Pintor, w: f32, h: f32, e: f32) -> Vec<Zona> {
-        let d = disposicion(w, h, e);
+        let d = self.disp(w, h, e);
+        self.contar_capas();
         if !self.encuadrado && (self.hay_plano || !self.plano.esperando()) {
             self.encuadrar(w, h, e);
         }
@@ -372,6 +439,9 @@ impl Mesa {
                     14.0 * e,
                     tema::TEXTO_SUAVE,
                 );
+            }
+            if self.rejilla_visible {
+                self.pintar_rejilla(p, &d.dibujo, w, h, e);
             }
             self.pintar_seleccion(p, &a_pantalla, e);
             if let Some((q, _)) = ajustado {
@@ -626,6 +696,17 @@ impl Mesa {
         let mut y = r.y + 12.0 * e;
         let tam = 12.5 * e;
         p.texto("Capas", x0, y, 14.0 * e, tema::TEXTO);
+        ui::boton(
+            p,
+            zonas,
+            rect(x0 + ancho - 24.0 * e, y - 3.0 * e, 24.0 * e, 22.0 * e),
+            "+",
+            15.0 * e,
+            Estilo::Plano,
+            encima,
+            Accion::Orden(Id::Otra(capas::CAPANUEVA)),
+            "Capa nueva (escriba su nombre)",
+        );
         y += 26.0 * e;
         let dib = &self.sesion.dibujo;
         let actual = dib.capa_actual();
@@ -634,7 +715,12 @@ impl Mesa {
         let limite = r.y + r.alto * 0.5;
         let capas: Vec<_> = dib.doc.layers.iter().collect();
         let caben = (((limite - y) / alto_fila).floor().max(1.0)) as usize;
-        for l in capas.iter().take(caben) {
+        self.capas_caben.set(caben);
+        let desde = self.capas_desde.min(capas.len().saturating_sub(caben));
+        let y_lista = y;
+        let conteo = self.conteo.as_ref().map(|(_, c)| c);
+        let tam_cuenta = 10.5 * e;
+        for l in capas.iter().skip(desde).take(caben) {
             let fila = rect(x0 - 4.0 * e, y, ancho + 8.0 * e, alto_fila - 2.0 * e);
             let es_actual = l.name == actual;
             if es_actual {
@@ -651,7 +737,20 @@ impl Mesa {
             p.rellenar_redondeado(rect(x0, y + 6.0 * e, 11.0 * e, 11.0 * e), 3.0 * e, color);
             let visible = l.is_visible();
             let bloqueada = l.is_locked();
-            let nombre_ancho = ancho - 72.0 * e;
+            // Cuantos objetos tiene, a la derecha (del recuento por version).
+            let cuenta = conteo
+                .and_then(|c| c.get(&l.name.to_uppercase()))
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let (cw, _) = p.medir_texto(&cuenta, tam_cuenta);
+            p.texto(
+                &cuenta,
+                x0 + ancho - 52.0 * e - cw,
+                y + 5.0 * e,
+                tam_cuenta,
+                tema::TEXTO_APAGADO,
+            );
+            let nombre_ancho = ancho - 78.0 * e - cw;
             let col_nombre = if visible {
                 tema::TEXTO
             } else {
@@ -696,8 +795,23 @@ impl Mesa {
             y += alto_fila;
         }
         if capas.len() > caben {
+            // La barra de desplazamiento (la lista se mueve con la rueda).
+            let total = capas.len() as f32;
+            let alto_lista = caben as f32 * alto_fila;
+            let barra = rect(
+                r.x + r.ancho - 6.0 * e,
+                y_lista + alto_lista * desde as f32 / total,
+                3.0 * e,
+                (alto_lista * caben as f32 / total).max(12.0 * e),
+            );
+            p.rellenar_redondeado(barra, 1.5 * e, tema::TEXTO_APAGADO);
             p.texto(
-                &format!("y {} capas mas…", capas.len() - caben),
+                &format!(
+                    "{}–{} de {} capas (rueda para ver mas)",
+                    desde + 1,
+                    (desde + caben).min(capas.len()),
+                    capas.len()
+                ),
                 x0,
                 y + 2.0 * e,
                 11.0 * e,
@@ -787,8 +901,9 @@ impl Mesa {
         let x = 12.0 * e;
         let mut y = r.y + 4.0 * e;
         let reg = &self.sesion.registro;
-        let desde = reg.len().saturating_sub(tema::LINEAS_HISTORIAL);
-        for _ in 0..tema::LINEAS_HISTORIAL.saturating_sub(reg.len() - desde) {
+        let lineas = self.lineas();
+        let desde = reg.len().saturating_sub(lineas);
+        for _ in 0..lineas.saturating_sub(reg.len() - desde) {
             y += tema::ALTO_LINEA * e;
         }
         for l in &reg[desde..] {
@@ -960,6 +1075,194 @@ impl Mesa {
                 tam,
                 tema::ACENTO,
             );
+        }
+    }
+}
+
+/// La zona de la lista de capas dentro del panel (para la rueda).
+fn zona_capas(panel: RectF, e: f32) -> RectF {
+    let arriba = panel.y + 38.0 * e;
+    rect(
+        panel.x,
+        arriba,
+        panel.ancho,
+        (panel.y + panel.alto * 0.5 - arriba).max(0.0),
+    )
+}
+
+/// La vista, las capas del panel, el doble clic y la rejilla.
+impl Mesa {
+    /// Apunta la vista de ahora para ZOOM Previo.
+    pub fn guardar_vista(&mut self) {
+        if self.vistas.last() != Some(&self.camara) {
+            self.vistas.push(self.camara);
+            if self.vistas.len() > VISTAS {
+                self.vistas.remove(0);
+            }
+        }
+    }
+
+    /// **Atiende lo que pidio una orden a la vista** (ZOOM, ZE). Dice si cambio.
+    pub fn atender_vista(&mut self, w: f32, h: f32, e: f32) -> bool {
+        let Some(pedido) = self.sesion.memoria.vista.take() else {
+            return false;
+        };
+        let d = self.disp(w, h, e).dibujo;
+        let zona = [d.x as f64, d.y as f64, d.ancho as f64, d.alto as f64];
+        let (wd, hd) = (w as f64, h as f64);
+        match pedido {
+            PedidoVista::Extension => self.encuadrar(w, h, e),
+            PedidoVista::Todo => {
+                let hd_ = &self.sesion.dibujo.doc.header;
+                let limites = [
+                    hd_.model_space_limits_min.x,
+                    hd_.model_space_limits_min.y,
+                    hd_.model_space_limits_max.x,
+                    hd_.model_space_limits_max.y,
+                ];
+                let caja = [self.sesion.dibujo.indice().caja(), self.caja_plano]
+                    .into_iter()
+                    .flatten()
+                    .chain(cad_nucleo::geo::caja_valida(&limites).then_some(limites))
+                    .reduce(cad_nucleo::geo::unir_cajas);
+                match caja {
+                    Some(c) => {
+                        self.guardar_vista();
+                        self.camara = Camara::encuadrar(c, zona, wd, hd);
+                    }
+                    None => self.encuadrar(w, h, e),
+                }
+            }
+            PedidoVista::Ventana(a, b) => {
+                self.guardar_vista();
+                let c = [
+                    a[0].min(b[0]),
+                    a[1].min(b[1]),
+                    a[0].max(b[0]),
+                    a[1].max(b[1]),
+                ];
+                self.camara = Camara::encuadrar(c, zona, wd, hd);
+            }
+            PedidoVista::Previa => match self.vistas.pop() {
+                Some(c) => self.camara = c,
+                None => self.sesion.avisar("No hay una vista anterior"),
+            },
+            PedidoVista::Factor(k) => {
+                self.guardar_vista();
+                let (cx, cy) = (zona[0] + zona[2] / 2.0, zona[1] + zona[3] / 2.0);
+                self.camara = self.camara.zoom(1.0 / k, cx, cy, wd, hd);
+            }
+        }
+        true
+    }
+
+    /// Si el raton esta sobre la lista de capas (la rueda la mueve a ella).
+    pub fn en_capas(&self, x: f32, y: f32, w: f32, h: f32, e: f32) -> bool {
+        ui::dentro(&zona_capas(self.disp(w, h, e).panel, e), x, y)
+    }
+
+    /// La rueda sobre la lista de capas: tres filas por paso.
+    pub fn rueda_capas(&mut self, pasos: f32) {
+        let filas = (pasos.abs() * 3.0).round().max(1.0) as usize;
+        let total = self.sesion.dibujo.doc.layers.len();
+        let tope = total.saturating_sub(self.capas_caben.get().min(total));
+        self.capas_desde = if pasos > 0.0 {
+            self.capas_desde.min(tope).saturating_sub(filas)
+        } else {
+            (self.capas_desde + filas).min(tope)
+        };
+    }
+
+    /// Vuelve a contar los objetos de cada capa si el dibujo cambio (no en
+    /// cada fotograma: una vez por version).
+    fn contar_capas(&mut self) {
+        let v = self.sesion.dibujo.version();
+        if self.conteo.as_ref().is_some_and(|(c, _)| *c == v) {
+            return;
+        }
+        let mut m: HashMap<String, usize> = HashMap::new();
+        for e in self.sesion.dibujo.doc.model_space_entities() {
+            let capa = &e.common().layer;
+            match m.get_mut(capa) {
+                Some(n) => *n += 1,
+                None => {
+                    m.insert(capa.clone(), 1);
+                }
+            }
+        }
+        // Las capas no distinguen mayusculas.
+        let mut juntas: HashMap<String, usize> = HashMap::with_capacity(m.len());
+        for (k, n) in m {
+            *juntas.entry(k.to_uppercase()).or_default() += n;
+        }
+        self.conteo = Some((v, juntas));
+    }
+
+    /// **Doble clic** en el plano: en un texto, EDITARTEXTO (si esta). Dice
+    /// si lo atendio.
+    pub fn doble_clic(&mut self, x: f32, y: f32, w: f32, h: f32, e: f32) -> bool {
+        if self.sesion.activa().is_some() {
+            return false;
+        }
+        let Some(ed) = ordenes::buscar("ED") else {
+            return false;
+        };
+        let tol = self.camara.px * (tema::CAJA_CURSOR * e) as f64 / 2.0 + self.camara.px;
+        let p = self.a_plano(x, y, w, h);
+        let Some(hd) = cad_nucleo::seleccion::elegir(&self.sesion.dibujo.indice(), p, tol) else {
+            return false;
+        };
+        if !matches!(
+            self.sesion.dibujo.entidad(hd),
+            Some(EntityType::Text(_) | EntityType::MText(_))
+        ) {
+            return false;
+        }
+        self.abajo = None;
+        self.sesion.seleccion = vec![hd];
+        self.sesion.orden(ed.id);
+        true
+    }
+
+    /// La rejilla pintada (F7): rayas tenues cada paso de la rejilla (o uno
+    /// redondo a la escala de lo que se ve), con una mas marcada cada cinco.
+    fn pintar_rejilla(&self, p: &Pintor, zona: &RectF, w: f32, h: f32, e: f32) {
+        let px = self.camara.px;
+        let mut paso = self
+            .sesion
+            .ajustes
+            .rejilla
+            .unwrap_or_else(|| paso_redondo(px * 20.0));
+        if !(paso > 0.0 && paso.is_finite()) {
+            return;
+        }
+        // Nunca mas de una raya cada 8 pixeles.
+        while paso / px < 8.0 * e as f64 {
+            paso *= 5.0;
+        }
+        let a = self.a_plano(zona.x, zona.y + zona.alto, w, h);
+        let b = self.a_plano(zona.x + zona.ancho, zona.y, w, h);
+        let (wd, hd) = (w as f64, h as f64);
+        let tenue = tema::rgba(0xF5, 0xF5, 0xF7, 0.05);
+        let marcada = tema::rgba(0xF5, 0xF5, 0xF7, 0.11);
+        let color = |k: f64| {
+            if (k / paso).round().rem_euclid(5.0) == 0.0 {
+                marcada
+            } else {
+                tenue
+            }
+        };
+        let mut x = (a[0] / paso).floor() * paso;
+        while x <= b[0] {
+            let (sx, _) = self.camara.pantalla([x, 0.0], wd, hd);
+            p.linea((sx, zona.y), (sx, zona.y + zona.alto), 1.0, color(x));
+            x += paso;
+        }
+        let mut y = (a[1] / paso).floor() * paso;
+        while y <= b[1] {
+            let (_, sy) = self.camara.pantalla([0.0, y], wd, hd);
+            p.linea((zona.x, sy), (zona.x + zona.ancho, sy), 1.0, color(y));
+            y += paso;
         }
     }
 }

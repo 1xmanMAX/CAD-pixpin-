@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use pixpin_render::Pintor;
 
+use crate::autoguardado::{self, Recuperable};
 use crate::recientes;
 use crate::tema;
 use crate::ui::{self, Accion, Zona, rect};
@@ -23,6 +24,8 @@ const ATAJOS: &[(&str, &str)] = &[
     ("F", "Empalme"),
     ("M / CO", "Mover / copiar"),
     ("LA", "Lamina con membrete"),
+    ("Z / ZE", "Zoom / ver todo"),
+    ("Ctrl C / V", "Copiar / pegar"),
     ("Ctrl Z", "Deshacer"),
 ];
 
@@ -33,6 +36,7 @@ pub fn pintar(
     h: f32,
     e: f32,
     recientes: &[PathBuf],
+    recuperables: &[Recuperable],
     encima: Option<(f32, f32)>,
 ) -> Vec<Zona> {
     let mut zonas = Vec::new();
@@ -146,6 +150,10 @@ pub fn pintar(
         "Volumen, areas y cantidad de cada partida del IFC o Revit",
     );
     y += 44.0 * e;
+
+    if !recuperables.is_empty() {
+        y = pintar_recuperar(p, x0, y, ancho, e, recuperables, encima, &mut zonas);
+    }
 
     // Recientes a la izquierda, atajos a la derecha.
     let ancho_atajos = (ancho * 0.34).max(260.0 * e);
@@ -264,4 +272,85 @@ pub fn pintar(
         tema::TEXTO_APAGADO,
     );
     zonas
+}
+
+/// **Lo que se puede recuperar del autoguardado** (como mucho tres), con
+/// Recuperar y Descartar. Da donde sigue lo de abajo.
+#[allow(clippy::too_many_arguments)]
+fn pintar_recuperar(
+    p: &Pintor,
+    x0: f32,
+    mut y: f32,
+    ancho: f32,
+    e: f32,
+    recuperables: &[Recuperable],
+    encima: Option<(f32, f32)>,
+    zonas: &mut Vec<Zona>,
+) -> f32 {
+    p.texto(
+        "Recuperar: planos con cambios que no se guardaron",
+        x0,
+        y,
+        15.0 * e,
+        tema::NARANJA,
+    );
+    y += 28.0 * e;
+    let ahora = std::time::SystemTime::now();
+    for r in recuperables.iter().take(3) {
+        let fila = rect(x0, y, ancho, 40.0 * e);
+        p.rellenar_redondeado(fila, 10.0 * e, tema::PANEL);
+        p.trazar(fila, 1.0 * e, tema::NARANJA);
+        let hace = autoguardado::hace(ahora.duration_since(r.cuando).unwrap_or_default());
+        let donde = r
+            .original
+            .as_ref()
+            .and_then(|o| o.parent())
+            .map(|c| c.display().to_string())
+            .unwrap_or_else(|| "sin guardar nunca".into());
+        let ancho_botones = 210.0 * e;
+        p.texto(
+            &ui::recortar(p, &r.nombre(), 13.0 * e, ancho - ancho_botones - 220.0 * e),
+            fila.x + 16.0 * e,
+            fila.y + 11.0 * e,
+            13.0 * e,
+            tema::TEXTO,
+        );
+        p.texto(
+            &ui::recortar(p, &format!("copia {hace}  ·  {donde}"), 11.0 * e, 200.0 * e),
+            fila.x + ancho - ancho_botones - 210.0 * e,
+            fila.y + 13.0 * e,
+            11.0 * e,
+            tema::TEXTO_APAGADO,
+        );
+        let b = rect(
+            fila.x + ancho - ancho_botones,
+            fila.y + 6.0 * e,
+            100.0 * e,
+            28.0 * e,
+        );
+        ui::boton(
+            p,
+            zonas,
+            b,
+            "Recuperar",
+            12.0 * e,
+            ui::Estilo::Principal,
+            encima,
+            Accion::Recuperar(r.copia.clone()),
+            "Abrir la copia del autoguardado (luego Ctrl+S la guarda en su sitio)",
+        );
+        ui::boton(
+            p,
+            zonas,
+            rect(b.x + 106.0 * e, b.y, 94.0 * e, b.alto),
+            "Descartar",
+            12.0 * e,
+            ui::Estilo::Plano,
+            encima,
+            Accion::DescartarCopia(r.copia.clone()),
+            "Borrar esta copia del autoguardado",
+        );
+        y += 46.0 * e;
+    }
+    y + 10.0 * e
 }

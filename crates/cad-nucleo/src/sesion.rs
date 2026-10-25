@@ -13,7 +13,7 @@ use crate::entrada::{self, Entrada};
 use crate::especialidad as esp;
 use crate::formas;
 use crate::geo::{self, Forma, P};
-use crate::herramienta::{Contexto, Flujo, Herramienta, Lectura};
+use crate::herramienta::{Contexto, Flujo, Herramienta, Lectura, Memoria};
 use crate::operaciones as op;
 use crate::ordenes::{self, Id};
 
@@ -99,6 +99,8 @@ pub struct Sesion {
     direccion: Option<P>,
     /// La orden enchufable en marcha ([`crate::herramientas`]), si es una de esas.
     herr: Option<Box<dyn Herramienta>>,
+    /// Lo que recuerdan las ordenes enchufables (y lo que piden a la ventana).
+    pub memoria: Memoria,
 }
 
 impl Sesion {
@@ -115,6 +117,7 @@ impl Sesion {
             registro: Vec::new(),
             direccion: None,
             herr: None,
+            memoria: Memoria::default(),
         }
     }
 
@@ -139,6 +142,7 @@ impl Sesion {
             dibujo: &mut self.dibujo,
             seleccion: &mut self.seleccion,
             ajustes: &mut self.ajustes,
+            memoria: &mut self.memoria,
             registro: &mut self.registro,
         };
         Some(f(h.as_mut(), &mut cx))
@@ -205,8 +209,13 @@ impl Sesion {
             && let Some(r) = crate::herramientas::de(n)
         {
             self.herr = Some((r.crear)());
+            if self.con_herr(|h, cx| h.al_empezar(cx)) == Some(Flujo::Termina) {
+                self.tras(Flujo::Termina);
+                return;
+            }
         }
         if self.paso.elegidos {
+            self.memoria.seleccion_previa = self.seleccion.clone();
             self.decir(format!("{} objetos elegidos", self.seleccion.len()));
             // Las que no piden nada mas que los objetos, de una vez.
             if matches!(id, Id::Borrar | Id::Descomponer) {
@@ -781,6 +790,7 @@ impl Sesion {
                 return;
             }
             self.paso.elegidos = true;
+            self.memoria.seleccion_previa = self.seleccion.clone();
             self.decir(format!("{} objetos elegidos", self.seleccion.len()));
             if matches!(id, Id::Borrar | Id::Descomponer) {
                 self.terminar_con_objetos();

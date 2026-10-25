@@ -5,6 +5,9 @@
 //! - `cadpixpin plano.dwg` (o arrastrar el fichero) lo abre en la mesa de trabajo.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+// Fuera de Windows solo lo usan sus pruebas.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod autoguardado;
 #[cfg(windows)]
 mod bim;
 #[cfg(windows)]

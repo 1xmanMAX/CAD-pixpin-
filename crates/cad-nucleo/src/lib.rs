@@ -16,7 +16,9 @@ pub mod herramientas;
 pub mod metrados;
 pub mod operaciones;
 pub mod ordenes;
+pub mod portapapeles;
 pub mod seleccion;
+pub mod seleccion_rapida;
 pub mod sesion;
 
 pub use dibujo::{Dibujo, Transaccion};

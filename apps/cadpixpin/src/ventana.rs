@@ -7,15 +7,19 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 use cad_nucleo::Dibujo;
+use cad_nucleo::herramientas::portapapeles as pp;
 use cad_nucleo::opencadcodec::CadDocument;
 use cad_nucleo::ordenes::Id;
 use pixpin_cad::gpu::Gpu;
 use pixpin_render::MotorRender;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ScreenToClient,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -25,6 +29,7 @@ use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDR
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
+use crate::autoguardado::{self, Recuperable};
 use crate::bim::{self, Aviso};
 use crate::mesa::Mesa;
 use crate::ui::{Accion, Interruptor, Zona};
@@ -34,6 +39,8 @@ use crate::{dialogos, inicio, recientes, tema};
 enum Evento {
     Mover(i32, i32),
     Bajar(i32, i32, bool),
+    /// Doble clic con el izquierdo (en vez del segundo `Bajar`).
+    Doble(i32, i32),
     Subir(i32, i32, bool),
     DobleCentral,
     Derecho,
@@ -82,11 +89,17 @@ unsafe extern "system" fn procedimiento(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             return LRESULT(0);
         }
         WM_MOUSELEAVE => apuntar(Evento::Fuera),
-        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+        WM_LBUTTONDOWN => {
             let (x, y) = xy(lp);
             // SAFETY: ventana propia.
             let _ = unsafe { SetCapture(hwnd) };
             apuntar(Evento::Bajar(x, y, false));
+        }
+        WM_LBUTTONDBLCLK => {
+            let (x, y) = xy(lp);
+            // SAFETY: ventana propia.
+            let _ = unsafe { SetCapture(hwnd) };
+            apuntar(Evento::Doble(x, y));
         }
         WM_LBUTTONUP => {
             let (x, y) = xy(lp);
@@ -253,6 +266,8 @@ enum Pantalla {
 struct Abriendo {
     ruta: PathBuf,
     llega: Receiver<Result<CadDocument, String>>,
+    /// Si es una copia del autoguardado: de que original (si tenia nombre).
+    recuperado: Option<Option<PathBuf>>,
 }
 
 /// **Todo el estado de la app.**
@@ -273,6 +288,12 @@ struct App {
     aviso_inicio: Option<String>,
     titulo: String,
     salir: bool,
+    /// Las copias del autoguardado que ofrece el inicio.
+    recuperables: Vec<Recuperable>,
+    /// Cada cuanto se autoguarda (`None`: nunca).
+    cada_autoguardado: Option<Duration>,
+    /// En pantalla completa (F11): el estilo y el sitio de antes.
+    completa: Option<(i32, WINDOWPLACEMENT)>,
 }
 
 /// **Arranca la app** y no vuelve hasta cerrarla.
@@ -299,7 +320,16 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
         aviso_inicio: None,
         titulo: String::new(),
         salir: false,
+        recuperables: autoguardado::buscar(),
+        cada_autoguardado: autoguardado::intervalo(),
+        completa: None,
     };
+    // Un tic cada 30 s despierta el bucle (que espera sin limite) para el
+    // autoguardado.
+    // SAFETY: ventana propia; sin TIMERPROC (el WM_TIMER va a DefWindowProc).
+    unsafe {
+        SetTimer(Some(hwnd), 1, 30_000, None);
+    }
     if let Some(r) = abrir {
         app.abrir_ruta(r);
     }
@@ -323,6 +353,7 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
         if app.recibir() {
             sucio = true;
         }
+        app.autoguardar();
         if sucio && !app.salir {
             app.pintar();
             sucio = false;
@@ -356,6 +387,19 @@ impl App {
         {
             let a = self.abriendo.take().unwrap();
             match r {
+                Ok(doc) if a.recuperado.is_some() => {
+                    let original = a.recuperado.flatten();
+                    let mut d = Dibujo::de_documento(doc, original);
+                    // Lo recuperado aun no esta guardado en su sitio.
+                    d.tocar();
+                    let mut m = Mesa::nueva(d);
+                    m.autoguardado = autoguardado::Estado::recuperado(a.ruta.clone());
+                    m.sesion.avisar(
+                        "Recuperado del autoguardado: guarde (Ctrl+S) para quedarse con esta version",
+                    );
+                    self.recuperables.retain(|r| r.copia != a.ruta);
+                    self.pantalla = Pantalla::Mesa(Box::new(m));
+                }
                 Ok(doc) => {
                     recientes::anadir(&a.ruta);
                     self.recientes = recientes::leer();
@@ -371,6 +415,9 @@ impl App {
             cambio = true;
         }
         if let Pantalla::Mesa(m) = &mut self.pantalla {
+            if m.atender_vista(self.w as f32, self.h as f32, self.e) {
+                cambio = true;
+            }
             m.al_dia();
             if m.plano.recibir(&self.gpu) {
                 cambio = true;
@@ -439,6 +486,17 @@ impl App {
                     m.subir(x as f32, y as f32, central, w, h, e);
                 }
             }
+            Evento::Doble(x, y) => {
+                let (xf, yf) = (x as f32, y as f32);
+                if let Pantalla::Mesa(m) = &mut self.pantalla
+                    && m.en_el_dibujo(xf, yf, w, h, e)
+                    && m.doble_clic(xf, yf, w, h, e)
+                {
+                    return;
+                }
+                // Si no, como un clic mas.
+                self.atender(Evento::Bajar(x, y, false));
+            }
             Evento::DobleCentral => self.accion(Accion::Encuadre),
             Evento::Derecho => {
                 if let Pantalla::Mesa(m) = &mut self.pantalla {
@@ -447,7 +505,12 @@ impl App {
             }
             Evento::Rueda(delta, x, y) => {
                 if let Pantalla::Mesa(m) = &mut self.pantalla {
-                    m.rueda(delta as f32 / 120.0, x as f32, y as f32, w, h);
+                    let (xf, yf) = (x as f32, y as f32);
+                    if m.en_capas(xf, yf, w, h, e) {
+                        m.rueda_capas(delta as f32 / 120.0);
+                    } else {
+                        m.rueda(delta as f32 / 120.0, xf, yf, w, h);
+                    }
                 }
             }
             Evento::Tecla(vk) => self.tecla(vk),
@@ -475,6 +538,10 @@ impl App {
     fn tecla(&mut self, vk: u32) {
         let ctrl = tecla_pulsada(VK_CONTROL.0);
         let shift = tecla_pulsada(VK_SHIFT.0);
+        if vk == 0x7A {
+            self.pantalla_completa();
+            return;
+        }
         let Pantalla::Mesa(m) = &mut self.pantalla else {
             match (ctrl, vk) {
                 (true, 0x4F) => self.accion(Accion::AbrirPlano),
@@ -485,6 +552,22 @@ impl App {
         };
         match (ctrl, vk) {
             (_, 0x1B) => m.escape(),
+            (false, 0x71) => {
+                m.historial_alto = !m.historial_alto;
+            }
+            (false, 0x76) => {
+                m.rejilla_visible = !m.rejilla_visible;
+                m.sesion.avisar(if m.rejilla_visible {
+                    "<Rejilla visible activada>"
+                } else {
+                    "<Rejilla visible desactivada>"
+                });
+            }
+            (true, 0x5A) if shift => m.sesion.orden(Id::Rehacer),
+            (true, 0x43) if shift => m.sesion.orden(Id::Otra(pp::COPIABASE)),
+            (true, 0x43) => m.sesion.orden(Id::Otra(pp::COPIAR)),
+            (true, 0x58) => m.sesion.orden(Id::Otra(pp::CORTAR)),
+            (true, 0x56) => m.sesion.orden(Id::Otra(pp::PEGAR)),
             (false, 0x2E) => m.sesion.borrar_seleccion(),
             (false, 0x72) => m.alternar(Interruptor::Enganche),
             (false, 0x77) => m.alternar(Interruptor::Orto),
@@ -507,6 +590,7 @@ impl App {
             return true;
         };
         if !m.sesion.dibujo.sucio() {
+            m.autoguardado.olvidar();
             return true;
         }
         let nombre = m
@@ -519,6 +603,8 @@ impl App {
             "CAD-pixpin",
             &format!("¿Guardar los cambios de {nombre}?"),
         ) {
+            // No se quieren los cambios: tampoco su copia.
+            m.autoguardado.olvidar();
             return true;
         }
         self.guardar(false)
@@ -583,7 +669,99 @@ impl App {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
-        self.abriendo = Some(Abriendo { ruta, llega: rx });
+        self.abriendo = Some(Abriendo {
+            ruta,
+            llega: rx,
+            recuperado: None,
+        });
+    }
+
+    /// **Abre una copia del autoguardado** como si fuera su original (con
+    /// sus cambios sin guardar).
+    fn recuperar(&mut self, copia: PathBuf) {
+        let Some(r) = self.recuperables.iter().find(|r| r.copia == copia).cloned() else {
+            return;
+        };
+        if !self.puede_dejar_el_dibujo() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let leer = r.copia.clone();
+        let _ = std::thread::Builder::new()
+            .name("plano-recuperar".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let res = std::panic::catch_unwind(|| cad_nucleo::dibujo::leer(&leer))
+                    .unwrap_or_else(|_| Err("la copia esta dañada".into()));
+                let _ = tx.send(res);
+            });
+        self.pantalla = Pantalla::Inicio;
+        self.aviso_inicio = Some(format!("Recuperando {}…", r.nombre()));
+        self.abriendo = Some(Abriendo {
+            ruta: r.copia,
+            llega: rx,
+            recuperado: Some(r.original),
+        });
+    }
+
+    /// Hace la copia del autoguardado si toca (se mira en cada vuelta: es
+    /// comparar dos numeros y una hora).
+    fn autoguardar(&mut self) {
+        let (Some(cada), Pantalla::Mesa(m)) = (self.cada_autoguardado, &mut self.pantalla) else {
+            return;
+        };
+        if m.autoguardado.toca(&m.sesion.dibujo, Instant::now(), cada) {
+            m.autoguardado.lanzar(&m.sesion.dibujo);
+        }
+    }
+
+    /// F11: pantalla completa (sin marco, el monitor entero) o como estaba.
+    fn pantalla_completa(&mut self) {
+        let hwnd = self.hwnd;
+        // SAFETY: ventana propia; estructuras locales validas durante las llamadas.
+        unsafe {
+            if let Some((estilo, sitio)) = self.completa.take() {
+                SetWindowLongW(hwnd, GWL_STYLE, estilo);
+                let _ = SetWindowPlacement(hwnd, &sitio);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+                );
+                return;
+            }
+            let estilo = GetWindowLongW(hwnd, GWL_STYLE);
+            let mut sitio = WINDOWPLACEMENT {
+                length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                ..Default::default()
+            };
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if GetWindowPlacement(hwnd, &mut sitio).is_err()
+                || !GetMonitorInfoW(monitor, &mut mi).as_bool()
+            {
+                return;
+            }
+            SetWindowLongW(hwnd, GWL_STYLE, estilo & !(WS_OVERLAPPEDWINDOW.0 as i32));
+            let r = mi.rcMonitor;
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOP),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+            );
+            self.completa = Some((estilo, sitio));
+        }
     }
 
     fn accion(&mut self, a: Accion) {
@@ -605,6 +783,11 @@ impl App {
                 }
             }
             Accion::AbrirReciente(r) => self.abrir_ruta(r),
+            Accion::Recuperar(c) => self.recuperar(c),
+            Accion::DescartarCopia(c) => {
+                autoguardado::descartar(&c);
+                self.recuperables.retain(|r| r.copia != c);
+            }
             Accion::MetradoBim => self.metrado_bim(),
             Accion::Inicio => {
                 if self.puede_dejar_el_dibujo() {
@@ -726,6 +909,7 @@ impl App {
         let mut zonas = Vec::new();
         let cursor = self.cursor;
         let recientes = &self.recientes;
+        let recuperables = &self.recuperables;
         let aviso = self.aviso_inicio.clone();
         // El globo del boton bajo el raton (de las zonas del fotograma anterior).
         let globo = cursor.and_then(|(x, y)| {
@@ -738,7 +922,7 @@ impl App {
         let mut pintar_encima = |p: &pixpin_render::Pintor, pantalla: &mut Pantalla| match pantalla
         {
             Pantalla::Inicio => {
-                zonas = inicio::pintar(p, w, h, e, recientes, cursor);
+                zonas = inicio::pintar(p, w, h, e, recientes, recuperables, cursor);
                 if let Some(a) = &aviso {
                     p.texto_con_fondo(
                         a,
