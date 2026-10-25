@@ -48,6 +48,8 @@ enum Evento {
     Tecla(u32),
     Caracter(char),
     Tamano(u32, u32),
+    /// Cambio de pantalla con otra escala: los puntos por pulgada nuevos.
+    Dpi(u32),
     Fuera,
     Soltar(Vec<PathBuf>),
     Cerrar,
@@ -186,6 +188,27 @@ unsafe extern "system" fn procedimiento(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             apuntar(Evento::Soltar(v));
             return LRESULT(0);
         }
+        WM_DPICHANGED => {
+            // El tamano que propone Windows para la escala nueva.
+            let r = lp.0 as *const RECT;
+            // SAFETY: con WM_DPICHANGED, lParam apunta a un RECT valido.
+            if let Some(r) = unsafe { r.as_ref() } {
+                // SAFETY: ventana propia.
+                let _ = unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                };
+            }
+            apuntar(Evento::Dpi((wp.0 & 0xffff) as u32));
+            return LRESULT(0);
+        }
         WM_ERASEBKGND => return LRESULT(1),
         WM_CLOSE => {
             apuntar(Evento::Cerrar);
@@ -260,6 +283,17 @@ fn poner_titulo(hwnd: HWND, t: &str) {
     let h = HSTRING::from(t);
     // SAFETY: ventana propia; cadena viva durante la llamada.
     let _ = unsafe { SetWindowTextW(hwnd, &h) };
+}
+
+/// **Devuelve el teclado a la ventana** tras un dialogo (abrir, guardar,
+/// preguntar): sin esto, lo que se escribia despues se perdia hasta hacer
+/// clic en la ventana.
+fn recuperar_foco(hwnd: HWND) {
+    // SAFETY: ventana propia.
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
+    }
 }
 
 fn tecla_pulsada(vk: u16) -> bool {
@@ -356,11 +390,15 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
                 DispatchMessageW(&m);
             }
         }
+        let t0 = Instant::now();
+        let mut ultimo = None;
         while let Some(ev) = COLA.with(|c| sacar_evento(&mut c.borrow_mut())) {
+            ultimo = Some(format!("{ev:?}"));
             app.atender(ev);
             app.atender_pedidos();
             sucio = true;
         }
+        let t1 = Instant::now();
         if app.recibir() {
             sucio = true;
         }
@@ -368,6 +406,17 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
         if sucio && !app.salir {
             app.pintar();
             sucio = false;
+        }
+        // Las vueltas lentas, al registro (para buscar donde se va el tiempo).
+        let (atender, total) = (t1 - t0, t0.elapsed());
+        if total > Duration::from_millis(60) {
+            tracing::info!(
+                "vuelta lenta: {} ms (eventos {} ms, recibir y pintar {} ms) tras {}",
+                total.as_millis(),
+                atender.as_millis(),
+                (total - atender).as_millis(),
+                ultimo.unwrap_or_default()
+            );
         }
         let espera = if app.ocupada() { 30 } else { INFINITE };
         // SAFETY: esperar mensajes de este hilo.
@@ -383,7 +432,7 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
 impl App {
     fn ocupada(&self) -> bool {
         self.abriendo.is_some()
-            || matches!(&self.pantalla, Pantalla::Mesa(m) if m.plano.esperando())
+            || matches!(&self.pantalla, Pantalla::Mesa(m) if m.plano.esperando() || m.animando())
     }
 
     /// Lo que llega de otros hilos. Dice si hay que pintar.
@@ -426,7 +475,7 @@ impl App {
             cambio = true;
         }
         if let Pantalla::Mesa(m) = &mut self.pantalla {
-            if m.atender_vista(self.w as f32, self.h as f32, self.e) {
+            if m.atender_vista(self.w as f32, self.h as f32, self.e) || m.animando() {
                 cambio = true;
             }
             m.al_dia();
@@ -454,6 +503,9 @@ impl App {
                     let _ = self.gpu.redimensionar(nw, nh);
                 }
             }
+            Evento::Dpi(dpi) => {
+                self.e = dpi.max(96) as f32 / 96.0;
+            }
             Evento::Mover(x, y) => {
                 let (x, y) = (x as f32, y as f32);
                 self.cursor = Some((x, y));
@@ -475,6 +527,14 @@ impl App {
             }
             Evento::Bajar(x, y, central) => {
                 let (x, y) = (x as f32, y as f32);
+                // Con un menu o una lista abiertos, un clic fuera solo los cierra.
+                if let Pantalla::Mesa(m) = &mut self.pantalla
+                    && m.emergente.is_some()
+                    && (central || !m.en_emergente(x, y))
+                {
+                    m.emergente = None;
+                    return;
+                }
                 if let Pantalla::Mesa(m) = &mut self.pantalla
                     && m.en_el_dibujo(x, y, w, h, e)
                 {
@@ -517,7 +577,9 @@ impl App {
             Evento::Rueda(delta, x, y) => {
                 if let Pantalla::Mesa(m) = &mut self.pantalla {
                     let (xf, yf) = (x as f32, y as f32);
-                    if m.en_capas(xf, yf, w, h, e) {
+                    if m.en_emergente(xf, yf) {
+                        m.rueda_emergente(delta as f32 / 120.0);
+                    } else if m.en_capas(xf, yf, w, h, e) {
                         m.rueda_capas(delta as f32 / 120.0);
                     } else {
                         m.rueda(delta as f32 / 120.0, xf, yf, w, h);
@@ -563,6 +625,17 @@ impl App {
         };
         match (ctrl, vk) {
             (_, 0x1B) => m.escape(),
+            (false, 0x26) => m.historial(true),
+            (false, 0x28) => m.historial(false),
+            (false, 0x09) => m.tabulador(shift),
+            (false, 0x7B) => {
+                m.entrada_dinamica = !m.entrada_dinamica;
+                m.sesion.avisar(if m.entrada_dinamica {
+                    "<Entrada dinamica activada>"
+                } else {
+                    "<Entrada dinamica desactivada>"
+                });
+            }
             (false, 0x71) => {
                 m.historial_alto = !m.historial_alto;
             }
@@ -609,11 +682,13 @@ impl App {
             .and_then(|r| r.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "el plano nuevo".into());
-        if !pixpin_shell::dialogo::preguntar(
+        let si = pixpin_shell::dialogo::preguntar(
             self.hwnd,
             "CAD-pixpin",
             &format!("¿Guardar los cambios de {nombre}?"),
-        ) {
+        );
+        recuperar_foco(self.hwnd);
+        if !si {
             // No se quieren los cambios: tampoco su copia.
             m.autoguardado.olvidar();
             return true;
@@ -632,7 +707,9 @@ impl App {
                 .and_then(|r| r.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Plano.dwg".into());
-            match dialogos::guardar(hwnd, &sugerido) {
+            let r = dialogos::guardar(hwnd, &sugerido);
+            recuperar_foco(hwnd);
+            match r {
                 Some(r) => Some(r),
                 None => return false,
             }
@@ -672,6 +749,7 @@ impl App {
                     sugerido,
                 } => {
                     let r = dialogos::elegir(self.hwnd, guardar, &titulo, &filtros, &sugerido);
+                    recuperar_foco(self.hwnd);
                     let Pantalla::Mesa(m) = &mut self.pantalla else {
                         return;
                     };
@@ -695,6 +773,7 @@ impl App {
                 }
                 PedidoApp::Aviso(t) => {
                     pixpin_shell::dialogo::avisar_al_frente("CAD-pixpin", &t);
+                    recuperar_foco(self.hwnd);
                 }
             }
         }
@@ -832,12 +911,16 @@ impl App {
                 }
             }
             Accion::AbrirPlano => {
-                if let Some(r) = dialogos::abrir(self.hwnd, dialogos::Que::Plano) {
+                let r = dialogos::abrir(self.hwnd, dialogos::Que::Plano);
+                recuperar_foco(self.hwnd);
+                if let Some(r) = r {
                     self.abrir_ruta(r);
                 }
             }
             Accion::AbrirModelo => {
-                if let Some(r) = dialogos::abrir(self.hwnd, dialogos::Que::Modelo) {
+                let r = dialogos::abrir(self.hwnd, dialogos::Que::Modelo);
+                recuperar_foco(self.hwnd);
+                if let Some(r) = r {
                     self.abrir_ruta(r);
                 }
             }
@@ -865,6 +948,8 @@ impl App {
                 let Pantalla::Mesa(m) = &mut self.pantalla else {
                     return;
                 };
+                // Lo que se elige en un menu o una lista los cierra.
+                m.emergente = None;
                 match otra {
                     Accion::Pestana(g) => m.pestana = g,
                     Accion::Orden(id) => m.sesion.orden(id),
@@ -890,6 +975,13 @@ impl App {
                         m.sesion.ajustes.enganche = true;
                         m.sesion.ajustes.modos.alternar(t);
                     }
+                    Accion::Desplegar(campo, y) => {
+                        m.emergente = Some(crate::mesa::Emergente::Lista { campo, y, desde: 0 });
+                    }
+                    Accion::Propiedad(c) => m.cambiar_propiedad(&c),
+                    Accion::Repetir => m.repetir(),
+                    Accion::Cancelar => m.cancelar(),
+                    Accion::VerPropiedades => m.ver_propiedades(),
                     _ => {}
                 }
             }
@@ -907,7 +999,9 @@ impl App {
             .and_then(|r| r.file_stem())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Plano".into());
-        let Some(destino) = dialogos::guardar_csv(hwnd, &format!("{base} - metrado.csv")) else {
+        let destino = dialogos::guardar_csv(hwnd, &format!("{base} - metrado.csv"));
+        recuperar_foco(hwnd);
+        let Some(destino) = destino else {
             return;
         };
         match escribir_csv(&destino, &csv) {
@@ -922,15 +1016,18 @@ impl App {
     }
 
     fn metrado_bim(&mut self) {
-        let Some(modelo) = dialogos::abrir(self.hwnd, dialogos::Que::Modelo) else {
+        let modelo = dialogos::abrir(self.hwnd, dialogos::Que::Modelo);
+        recuperar_foco(self.hwnd);
+        let Some(modelo) = modelo else {
             return;
         };
         let base = modelo
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(destino) = dialogos::guardar_csv(self.hwnd, &format!("{base} - metrado BIM.csv"))
-        else {
+        let destino = dialogos::guardar_csv(self.hwnd, &format!("{base} - metrado BIM.csv"));
+        recuperar_foco(self.hwnd);
+        let Some(destino) = destino else {
             return;
         };
         self.decir(format!("Midiendo {}…", modelo.display()));
@@ -994,7 +1091,12 @@ impl App {
                 }
             }
             Pantalla::Mesa(m) => {
+                let t = Instant::now();
                 zonas = m.pintar(p, w, h, e);
+                let ms = t.elapsed().as_millis();
+                if ms > 30 {
+                    tracing::info!("la mesa tardo {ms} ms en pintarse");
+                }
                 if let Some((t, x, y)) = &globo {
                     crate::ui::globo(p, t, *x, *y, e, w);
                 }
@@ -1006,6 +1108,7 @@ impl App {
         if let Pantalla::Mesa(m) = &mut self.pantalla {
             m.hay_plano = m.plano.gpu.is_some();
             m.caja_plano = m.plano.gpu.as_ref().and_then(|g| g.caja);
+            m.encuadrar_si_falta(w, h, e);
             tomado = m.plano.gpu.take();
         }
         // Los cubos que se ven, cada uno con su vista.

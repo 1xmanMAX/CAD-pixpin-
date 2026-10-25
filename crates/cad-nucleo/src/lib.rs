@@ -22,6 +22,7 @@ pub mod operaciones;
 pub mod ordenes;
 pub mod patrones;
 pub mod portapapeles;
+pub mod propiedades;
 pub mod seleccion;
 pub mod seleccion_rapida;
 pub mod sesion;

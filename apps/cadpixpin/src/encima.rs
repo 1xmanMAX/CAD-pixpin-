@@ -134,6 +134,57 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
     }
 }
 
+/// **Lo calculado de lo elegido** (las propiedades del panel), que solo se
+/// rehace si cambia la eleccion o el dibujo: con Ctrl+A en un plano grande,
+/// sumar longitudes y areas de todo en cada fotograma se comia el pintado.
+#[derive(Debug)]
+pub struct MemoEleccion<V> {
+    version: u64,
+    seleccion: Vec<Handle>,
+    valor: Option<V>,
+}
+
+impl<V> Default for MemoEleccion<V> {
+    fn default() -> Self {
+        MemoEleccion {
+            version: 0,
+            seleccion: Vec::new(),
+            valor: None,
+        }
+    }
+}
+
+impl<V> MemoEleccion<V> {
+    /// Lo de antes si la version y la eleccion son las mismas; si no, `f()`.
+    pub fn o_calcular(&mut self, version: u64, sel: &[Handle], f: impl FnOnce() -> V) -> &V {
+        let igual = self.valor.is_some() && self.version == version && self.seleccion == sel;
+        if !igual {
+            self.version = version;
+            self.seleccion.clear();
+            self.seleccion.extend_from_slice(sel);
+            self.valor = Some(f());
+        }
+        self.valor.as_ref().expect("recien calculado")
+    }
+
+    /// Lo ultimo calculado, si hay.
+    pub fn valor(&self) -> Option<&V> {
+        self.valor.as_ref()
+    }
+}
+
+/// **Cuantos decimales** tienen sentido en las coordenadas del cursor con
+/// `px` unidades del dibujo por pixel: los que distinguen un pixel del
+/// siguiente (de 0 a 6), y al menos los `minimo` del dibujo.
+pub fn decimales_para(px: f64, minimo: usize) -> usize {
+    let d = if px > 0.0 && px.is_finite() {
+        (-px.log10()).ceil().clamp(0.0, 6.0) as usize
+    } else {
+        0
+    };
+    d.max(minimo).min(6)
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -199,6 +250,39 @@ mod pruebas {
         }
         assert_eq!(veces, 3);
         assert_eq!(m.o_calcular(1, || 0), 10);
+    }
+
+    #[test]
+    fn los_decimales_siguen_al_zoom() {
+        // Un plano en mm visto entero: 10 mm por pixel, sin decimales.
+        assert_eq!(decimales_para(10.0, 0), 0);
+        assert_eq!(decimales_para(1.0, 0), 0);
+        assert_eq!(decimales_para(0.5, 0), 1);
+        assert_eq!(decimales_para(0.004, 0), 3);
+        // En metros, al menos los dos del dibujo.
+        assert_eq!(decimales_para(10.0, 2), 2);
+        assert_eq!(decimales_para(1e-12, 0), 6);
+        assert_eq!(decimales_para(f64::NAN, 1), 1);
+    }
+
+    #[test]
+    fn el_memo_de_la_eleccion_sigue_a_la_version_y_a_lo_elegido() {
+        let (d, hs) = dibujo_con_lineas(4);
+        let mut m: MemoEleccion<usize> = MemoEleccion::default();
+        let mut veces = 0;
+        let mut pedir = |v: u64, sel: &[Handle]| {
+            *m.o_calcular(v, sel, || {
+                veces += 1;
+                sel.len()
+            })
+        };
+        assert_eq!(pedir(d.version(), &hs), 4);
+        assert_eq!(pedir(d.version(), &hs), 4);
+        assert_eq!(pedir(d.version(), &hs[..2]), 2);
+        assert_eq!(pedir(d.version() + 1, &hs[..2]), 2);
+        // Vacio tambien se calcula (la primera vez).
+        assert_eq!(pedir(d.version() + 1, &[]), 0);
+        assert_eq!(veces, 4);
     }
 
     #[test]

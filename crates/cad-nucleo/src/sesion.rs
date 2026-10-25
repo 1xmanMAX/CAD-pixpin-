@@ -125,6 +125,11 @@ impl Sesion {
         self.activa
     }
 
+    /// La ultima orden que se empezo (la que repite Enter en vacio).
+    pub fn ultima(&self) -> Option<Id> {
+        self.ultima
+    }
+
     fn decir(&mut self, s: impl Into<String>) {
         self.registro.push(s.into());
         if self.registro.len() > 500 {

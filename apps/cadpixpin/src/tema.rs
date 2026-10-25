@@ -42,6 +42,8 @@ pub const NARANJA: Color = rgb(0xFF, 0x8A, 0x00);
 pub const AMARILLO: Color = rgb(0xFF, 0xD6, 0x0A);
 /// Lo que aun no se ha dibujado (la vista previa de la orden).
 pub const PREVIA: Color = rgb(0x64, 0xD2, 0xFF);
+/// Lo que esta bajo el cursor y se elegiria con un clic.
+pub const PRESELECCION: Color = rgba(0x64, 0xD2, 0xFF, 0.55);
 
 /// Las medidas, en pixeles a 100 % (se multiplican por la escala del monitor).
 pub const ALTO_PESTANAS: f32 = 34.0;
