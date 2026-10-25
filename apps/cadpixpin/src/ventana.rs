@@ -730,7 +730,14 @@ impl App {
                     bim::abrir(ruta, self.avisos.0.clone());
                 }
                 PedidoApp::Ver3d(None) => {
-                    self.decir("Ver el dibujo en 3D aun no esta listo".into());
+                    if let Pantalla::Mesa(m) = &self.pantalla {
+                        let d = &m.sesion.dibujo;
+                        let titulo = d.ruta.as_ref().and_then(|r| r.file_name()).map_or_else(
+                            || "Dibujo en 3D".to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        crate::vista3d::abrir(d.doc.clone(), titulo, self.avisos.0.clone());
+                    }
                 }
                 PedidoApp::ExplorarBim(ruta) => {
                     self.decir(format!(

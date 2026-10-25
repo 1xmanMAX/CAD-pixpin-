@@ -10,4 +10,15 @@ description = "El nucleo de edicion de CAD-pixpin: ordenes, enganches, deshacer 
 # El mismo lector de OpenCADStudio que usa pixpin-cad (misma revision): lee
 # y ESCRIBE DWG y DXF, y trae mover, girar, escalar y simetria para todas las
 # entidades. Rust puro: este crate se prueba tambien fuera de Windows.
-opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac" }
+opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac", features = [
+    # IMPORTAR3D: STL, OBJ, glTF/GLB, FBX y COLLADA como mallas (solo anade
+    # quick-xml, MIT, para el COLLADA).
+    "import",
+] }
+
+[dev-dependencies]
+# Las pruebas de EXPORTAR3D vuelven a leer el IFC escrito con el mismo lector
+# que usa la app (ifc-lite, MPL-2.0, ya en pixpin-bim).
+ifc-lite-processing = "20.3"
+# Leer el JSON del glTF escrito (MIT/Apache, ya en el arbol).
+serde_json = "1"
