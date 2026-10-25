@@ -16,6 +16,9 @@ mod bim;
 mod cubos;
 #[cfg(windows)]
 mod dialogos;
+// La lista de planos abiertos es portable (se prueba en cualquier sistema).
+#[cfg_attr(not(windows), allow(dead_code))]
+mod documentos;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod encima;
 #[cfg(windows)]

@@ -52,7 +52,8 @@ cotas, sombreados, presentaciones).
 | Modificar | MOVER (M), COPIAR (CO), GIRAR (GI, RO), ESCALA (SC), SIMETRIA (MI), DESFASE (O), RECORTAR (TR), ALARGAR (EX), EMPALME (F), CHAFLAN (CHA), MATRIZ (AR), MATRIZPOLAR (MP), DESCOMPONER (X), BORRAR (E), ESTIRAR (S), PARTIR (BR), UNIR (J), LONGITUD (LEN), ALINEAR (ALI), IGUALAR (MA), EDITARPOL (PE) |
 | Arquitectura | MURO (MU), EJES (EJ), PUERTA (PU), VENTANA (VE) |
 | Anotar | COTALINEAL (DLI), COTAALINEADA (DAL), CONTINUA (DCO), LINEABASE (DBA), RADIO (DRA), DIAMETRO (DDI), ANGULAR (DAN), ESCALACOTA (EC), COTA desmontada (COT), MTEXTO (MT), EDITARTEXTO (ED), ALTOTEXTO (AT), NIVEL (NPT), NORTE (NO), LAMINA (LA) |
-| Bloques | BLOQUE (B), INSERTAR (I), BIBLIOTECA (BIB), SOMBREADO (SO, HATCH) |
+| Bloques | BLOQUE (B), INSERTAR (I), BIBLIOTECA (BIB), SOMBREADO (SO, HATCH), INSERTARDWG (IA) |
+| Referencias externas | REFX (XA, XATTACH, XREF), REFSUPERPONER (XOVERLAY), RECARGARREF (XRELOAD), UNIRREF (XBIND), QUITARREF (XDETACH), LISTAREF (LREF, XREFS) |
 | Medir | DISTANCIA (DI), AREA (AA) |
 | Vista y capas | ZOOM (Z), ZE, CAPA (CA), LAYISO, LAYUNISO, LAYOFF, LAYON, LAYMCUR, LAYLCK, LAYULK |
 | Selección | SS (similares), SP (previa), SLC (por capa), INV (invertir) |
@@ -72,6 +73,21 @@ Cada orden nueva vive en su módulo de `crates/cad-nucleo/src/herramientas/` (el
 - **Cotas de verdad** (entidades `DIMENSION` con su bloque, como las de AutoCAD): lineal,
   alineada, continua, línea base, radio, diámetro y angular, con marcas de arquitectura y un
   estilo `PIXPIN` a la escala del dibujo.
+
+#### Varios planos juntos
+
+- **REFX** adjunta otro DWG o DXF como **referencia externa** (punto, escala y giro);
+  **REFSUPERPONER** la superpone (no se ve si este plano se referencia en otro). Se guarda
+  como en AutoCAD: un registro de bloque de referencia con la ruta (relativa al plano cuando
+  se puede, `.\base.dwg`), sin su contenido; al abrir se vuelve a leer el fichero. Sus capas
+  salen como `NOMBRE|CAPA` y sus bloques como `NOMBRE|BLOQUE`; las referencias que trae
+  dentro (adjuntas) se cargan también. Si un fichero falta, se dice en el historial y la
+  referencia queda vacía. **LISTAREF** dice de cada una si está cargada o no se encuentra,
+  **RECARGARREF** la vuelve a leer (la app avisa si su fichero cambió), **UNIRREF** la
+  convierte en un bloque del plano (`NOMBRE$0$CAPA`) y **QUITARREF** la quita. Una referencia
+  no se descompone. Lo que no se guarda: el estado de las capas `NOMBRE|CAPA` cambiado aquí.
+- **INSERTARDWG** trae otro plano entero como un bloque de este (con sus capas y bloques; lo
+  que ya hay con el mismo nombre gana).
 
 #### Rendimiento en planos grandes
 
@@ -121,6 +137,10 @@ Lo que en un CAD genérico son diez pasos:
   Arquitectura, Anotar, Bloques, Medir, Vista), capas y propiedades a la derecha, y abajo la línea de
   órdenes con autocompletado y la barra de estado.
 - Cursor en cruz, símbolos de enganche, vista previa de cada orden, recuadro azul o verde.
+- **Varios planos abiertos**, cada uno en su pestaña encima de la cinta (con • si tiene
+  cambios y × para cerrarlo; + abre uno nuevo): cada uno con su deshacer, su vista y su
+  autoguardado. Abrir un plano que ya está abierto va a su pestaña; soltar varios en la
+  ventana los abre todos. El inicio no los cierra: siguen en sus pestañas.
 - Los modelos BIM se abren en la **ventana 3D de PixPin** (órbita, caja de sección, niveles,
   medidas de cada pieza).
 
@@ -137,6 +157,8 @@ Lo que en un CAD genérico son diez pasos:
 | `F3` `F8` `F9` `F10` | Enganche, orto, rejilla, polar |
 | `Ctrl+S`, `Ctrl+Mayús+S`, `Ctrl+O`, `Ctrl+N` | Guardar, guardar como, abrir, nuevo |
 | `Ctrl+A` | Elegir todo |
+| `Ctrl+Tab`, `Ctrl+Mayús+Tab` | El plano abierto siguiente / anterior |
+| `Ctrl+W` (o `Ctrl+F4`) | Cerrar el plano (pregunta si guardar) |
 
 #### Atajos
 

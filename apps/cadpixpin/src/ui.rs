@@ -25,6 +25,10 @@ pub enum Accion {
     /// Borrar una copia del autoguardado que no se quiere.
     DescartarCopia(PathBuf),
     // Mesa
+    /// Ver el plano abierto `i` (su pestana).
+    Documento(usize),
+    /// Cerrar el plano abierto `i` (preguntando si guardar).
+    CerrarDocumento(usize),
     Inicio,
     Guardar,
     GuardarComo,

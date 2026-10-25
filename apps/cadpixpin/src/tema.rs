@@ -45,6 +45,8 @@ pub const PREVIA: Color = rgb(0x64, 0xD2, 0xFF);
 
 /// Las medidas, en pixeles a 100 % (se multiplican por la escala del monitor).
 pub const ALTO_PESTANAS: f32 = 34.0;
+/// La tira de los planos abiertos, encima de la cinta.
+pub const ALTO_DOCUMENTOS: f32 = 30.0;
 pub const ALTO_BOTONES: f32 = 58.0;
 pub const ANCHO_PANEL: f32 = 270.0;
 pub const ALTO_LINEA: f32 = 19.0;

@@ -245,7 +245,8 @@ impl Estado {
         }
         let turno = self.vigente.fetch_add(1, Ordering::SeqCst) + 1;
         escribir(
-            d.doc.clone(),
+            // Las referencias externas, como referencias (sin su contenido).
+            cad_nucleo::xref::para_guardar(&d.doc).unwrap_or_else(|| d.doc.clone()),
             destino.clone(),
             d.ruta.clone(),
             self.vigente.clone(),

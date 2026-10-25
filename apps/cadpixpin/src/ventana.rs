@@ -31,6 +31,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::autoguardado::{self, Recuperable};
 use crate::bim::{self, Aviso};
+use crate::documentos::{self, Documento, Documentos};
 use crate::mesa::Mesa;
 use crate::ui::{Accion, Interruptor, Zona};
 use crate::{dialogos, inicio, recientes, tema};
@@ -267,15 +268,22 @@ fn tecla_pulsada(vk: u16) -> bool {
     unsafe { GetKeyState(vk as i32) < 0 }
 }
 
+/// Los planos abiertos, cada uno en su pestana (se usa como la mesa activa).
+type Planos = Documentos<Documento>;
+
 enum Pantalla {
     Inicio,
-    Mesa(Box<Mesa>),
+    Mesa(Planos),
 }
 
-/// Un plano que se esta leyendo en otro hilo.
+/// Cada cuanto se mira si cambiaron los ficheros de las referencias externas.
+const CADA_VIGIA: Duration = Duration::from_secs(3);
+
+/// Un plano que se esta leyendo en otro hilo (con lo que haya que decir de
+/// sus referencias externas).
 struct Abriendo {
     ruta: PathBuf,
-    llega: Receiver<Result<CadDocument, String>>,
+    llega: Receiver<Result<(CadDocument, Vec<String>), String>>,
     /// Si es una copia del autoguardado: de que original (si tenia nombre).
     recuperado: Option<Option<PathBuf>>,
 }
@@ -292,7 +300,12 @@ struct App {
     recientes: Vec<PathBuf>,
     zonas: Vec<Zona>,
     cursor: Option<(f32, f32)>,
-    abriendo: Option<Abriendo>,
+    /// Los planos que se estan leyendo (se pueden soltar varios a la vez).
+    abriendo: Vec<Abriendo>,
+    /// Los planos abiertos mientras se ve el inicio (vuelven con su pestana).
+    aparcados: Option<Planos>,
+    /// Cuando se miraron por ultima vez las referencias externas.
+    vigia: Instant,
     avisos: (Sender<Aviso>, Receiver<Aviso>),
     /// Lo que se dice abajo en el inicio (errores al abrir…).
     aviso_inicio: Option<String>,
@@ -325,7 +338,9 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
         recientes: recientes::leer(),
         zonas: Vec::new(),
         cursor: None,
-        abriendo: None,
+        abriendo: Vec::new(),
+        aparcados: None,
+        vigia: Instant::now(),
         avisos: channel(),
         aviso_inicio: None,
         titulo: String::new(),
@@ -339,6 +354,8 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
     // SAFETY: ventana propia; sin TIMERPROC (el WM_TIMER va a DefWindowProc).
     unsafe {
         SetTimer(Some(hwnd), 1, 30_000, None);
+        // Y otro cada 3 s para mirar las referencias externas.
+        SetTimer(Some(hwnd), 2, CADA_VIGIA.as_millis() as u32, None);
     }
     if let Some(r) = abrir {
         app.abrir_ruta(r);
@@ -365,6 +382,9 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
             sucio = true;
         }
         app.autoguardar();
+        if app.vigilar() {
+            sucio = true;
+        }
         if sucio && !app.salir {
             app.pintar();
             sucio = false;
@@ -382,7 +402,7 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
 
 impl App {
     fn ocupada(&self) -> bool {
-        self.abriendo.is_some()
+        !self.abriendo.is_empty()
             || matches!(&self.pantalla, Pantalla::Mesa(m) if m.plano.esperando())
     }
 
@@ -393,12 +413,15 @@ impl App {
             self.decir(t);
             cambio = true;
         }
-        if let Some(a) = &self.abriendo
-            && let Ok(r) = a.llega.try_recv()
-        {
-            let a = self.abriendo.take().unwrap();
+        let mut i = 0;
+        while i < self.abriendo.len() {
+            let Ok(r) = self.abriendo[i].llega.try_recv() else {
+                i += 1;
+                continue;
+            };
+            let a = self.abriendo.remove(i);
             match r {
-                Ok(doc) if a.recuperado.is_some() => {
+                Ok((doc, avisos)) if a.recuperado.is_some() => {
                     let original = a.recuperado.flatten();
                     let mut d = Dibujo::de_documento(doc, original);
                     // Lo recuperado aun no esta guardado en su sitio.
@@ -408,20 +431,22 @@ impl App {
                     m.sesion.avisar(
                         "Recuperado del autoguardado: guarde (Ctrl+S) para quedarse con esta version",
                     );
+                    for t in avisos {
+                        m.sesion.avisar(t);
+                    }
                     self.recuperables.retain(|r| r.copia != a.ruta);
-                    self.pantalla = Pantalla::Mesa(Box::new(m));
+                    self.abrir_mesa(m);
                 }
-                Ok(doc) => {
+                Ok((doc, avisos)) => {
                     recientes::anadir(&a.ruta);
                     self.recientes = recientes::leer();
-                    self.pantalla = Pantalla::Mesa(Box::new(Mesa::nueva(Dibujo::de_documento(
-                        doc,
-                        Some(a.ruta),
-                    ))));
+                    let mut m = Mesa::nueva(Dibujo::de_documento(doc, Some(a.ruta)));
+                    for t in avisos {
+                        m.sesion.avisar(t);
+                    }
+                    self.abrir_mesa(m);
                 }
-                Err(e) => {
-                    self.aviso_inicio = Some(format!("No se pudo abrir {}: {e}", a.ruta.display()))
-                }
+                Err(e) => self.decir(format!("No se pudo abrir {}: {e}", a.ruta.display())),
             }
             cambio = true;
         }
@@ -534,12 +559,13 @@ impl App {
                 }
             }
             Evento::Soltar(v) => {
-                if let Some(r) = v.into_iter().next() {
+                // Cada plano soltado, en su pestana.
+                for r in v {
                     self.abrir_ruta(r);
                 }
             }
             Evento::Cerrar => {
-                if self.puede_dejar_el_dibujo() {
+                if self.puede_salir() {
                     self.salir = true;
                 }
             }
@@ -553,14 +579,33 @@ impl App {
             self.pantalla_completa();
             return;
         }
-        let Pantalla::Mesa(m) = &mut self.pantalla else {
+        let Pantalla::Mesa(planos) = &mut self.pantalla else {
             match (ctrl, vk) {
                 (true, 0x4F) => self.accion(Accion::AbrirPlano),
                 (true, 0x4E) => self.accion(Accion::PlanoNuevo),
+                // Volver a los planos abiertos.
+                (true, 0x09) => self.volver_a_los_planos(),
                 _ => {}
             }
             return;
         };
+        // Los planos abiertos: Ctrl+Tab, Ctrl+Mayus+Tab y Ctrl+W (o Ctrl+F4).
+        if ctrl && vk == 0x09 {
+            let cambio = if shift {
+                planos.anterior()
+            } else {
+                planos.siguiente()
+            };
+            if cambio {
+                self.al_cambiar_de_plano();
+            }
+            return;
+        }
+        if ctrl && (vk == 0x57 || vk == 0x73) {
+            self.cerrar_plano(None);
+            return;
+        }
+        let m = &mut *planos.mesa;
         match (ctrl, vk) {
             (_, 0x1B) => m.escape(),
             (false, 0x71) => {
@@ -708,7 +753,13 @@ impl App {
             bim::abrir(ruta, self.avisos.0.clone());
             return;
         }
-        if !self.puede_dejar_el_dibujo() {
+        // Si ya esta abierto, se va a su pestana; si se esta leyendo, nada.
+        if self.ir_al_plano(&ruta)
+            || self
+                .abriendo
+                .iter()
+                .any(|a| a.recuperado.is_none() && documentos::es_la_misma(&a.ruta, &ruta))
+        {
             return;
         }
         let (tx, rx) = channel();
@@ -717,22 +768,146 @@ impl App {
             .name("plano-abrir".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
-                let r = std::panic::catch_unwind(|| cad_nucleo::dibujo::leer(&r2))
+                let r = std::panic::catch_unwind(|| cad_nucleo::xref::leer_con_referencias(&r2))
                     .unwrap_or_else(|_| Err("el plano esta dañado".into()));
                 let _ = tx.send(r);
             });
-        self.pantalla = Pantalla::Inicio;
-        self.aviso_inicio = Some(format!(
+        self.decir(format!(
             "Abriendo {}…",
             ruta.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
-        self.abriendo = Some(Abriendo {
+        self.abriendo.push(Abriendo {
             ruta,
             llega: rx,
             recuperado: None,
         });
+    }
+
+    /// **Pone una mesa nueva en su pestana** (al final) y la deja a la vista.
+    fn abrir_mesa(&mut self, m: Mesa) {
+        let d = Documento::nuevo(m);
+        let planos = match std::mem::replace(&mut self.pantalla, Pantalla::Inicio) {
+            Pantalla::Mesa(mut p) => {
+                p.anadir(d);
+                p
+            }
+            Pantalla::Inicio => match self.aparcados.take() {
+                Some(mut p) => {
+                    p.anadir(d);
+                    p
+                }
+                None => Documentos::con(d),
+            },
+        };
+        self.pantalla = Pantalla::Mesa(planos);
+        self.aviso_inicio = None;
+        self.al_cambiar_de_plano();
+    }
+
+    /// Los planos abiertos (los de la mesa o los aparcados en el inicio).
+    fn planos_mut(&mut self) -> Option<&mut Planos> {
+        match &mut self.pantalla {
+            Pantalla::Mesa(p) => Some(p),
+            Pantalla::Inicio => self.aparcados.as_mut(),
+        }
+    }
+
+    /// Si `ruta` ya esta abierta, se va a su pestana (y dice que si).
+    fn ir_al_plano(&mut self, ruta: &Path) -> bool {
+        let Some(p) = self.planos_mut() else {
+            return false;
+        };
+        let Some(i) = p.buscar(|d| d.ruta().is_some_and(|r| documentos::es_la_misma(r, ruta)))
+        else {
+            return false;
+        };
+        p.activar(i);
+        self.volver_a_los_planos();
+        self.al_cambiar_de_plano();
+        true
+    }
+
+    /// Del inicio a los planos que habia abiertos.
+    fn volver_a_los_planos(&mut self) {
+        if matches!(self.pantalla, Pantalla::Inicio)
+            && let Some(p) = self.aparcados.take()
+        {
+            self.pantalla = Pantalla::Mesa(p);
+            self.aviso_inicio = None;
+            self.al_cambiar_de_plano();
+        }
+    }
+
+    /// Al ver otro plano: el raton esta donde esta (no donde lo dejo en esa
+    /// pestana).
+    fn al_cambiar_de_plano(&mut self) {
+        let cursor = self.cursor;
+        if let Pantalla::Mesa(m) = &mut self.pantalla {
+            m.cursor = cursor;
+        }
+    }
+
+    /// **Cierra el plano `i`** (o el activo), preguntando si guardar. Con el
+    /// ultimo se vuelve al inicio.
+    fn cerrar_plano(&mut self, i: Option<usize>) {
+        let Pantalla::Mesa(p) = &mut self.pantalla else {
+            return;
+        };
+        if let Some(i) = i {
+            p.activar(i);
+        }
+        if !self.puede_dejar_el_dibujo() {
+            return;
+        }
+        let Pantalla::Mesa(p) = &mut self.pantalla else {
+            return;
+        };
+        if p.cuantos() == 1 {
+            self.pantalla = Pantalla::Inicio;
+            self.aviso_inicio = None;
+        } else {
+            let i = p.indice_activo();
+            p.quitar(i);
+            self.al_cambiar_de_plano();
+        }
+    }
+
+    /// **Al cerrar la app**: cada plano con cambios pregunta si guardar (con
+    /// su pestana a la vista). Si se cancela uno, no se sale.
+    fn puede_salir(&mut self) -> bool {
+        self.volver_a_los_planos();
+        let n = match &self.pantalla {
+            Pantalla::Mesa(p) => p.cuantos(),
+            Pantalla::Inicio => return true,
+        };
+        for i in 0..n {
+            if let Pantalla::Mesa(p) = &mut self.pantalla {
+                p.activar(i);
+            }
+            if !self.puede_dejar_el_dibujo() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// **Mira las referencias externas** de los planos abiertos cada
+    /// [`CADA_VIGIA`] (leer fechas de ficheros no se hace en cada vuelta).
+    /// Dice si hay que pintar.
+    fn vigilar(&mut self) -> bool {
+        if self.vigia.elapsed() < CADA_VIGIA {
+            return false;
+        }
+        self.vigia = Instant::now();
+        let mut dijo = false;
+        if let Some(p) = self.planos_mut() {
+            for d in p.todos_mut() {
+                dijo |= d.revisar_referencias();
+            }
+        }
+        dijo
     }
 
     /// **Abre una copia del autoguardado** como si fuera su original (con
@@ -741,22 +916,24 @@ impl App {
         let Some(r) = self.recuperables.iter().find(|r| r.copia == copia).cloned() else {
             return;
         };
-        if !self.puede_dejar_el_dibujo() {
-            return;
-        }
         let (tx, rx) = channel();
         let leer = r.copia.clone();
+        let original = r.original.clone();
         let _ = std::thread::Builder::new()
             .name("plano-recuperar".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
-                let res = std::panic::catch_unwind(|| cad_nucleo::dibujo::leer(&leer))
-                    .unwrap_or_else(|_| Err("la copia esta dañada".into()));
+                let res = std::panic::catch_unwind(|| {
+                    // Las referencias se buscan desde donde estaba el original.
+                    let mut doc = cad_nucleo::dibujo::leer(&leer)?;
+                    let avisos = cad_nucleo::xref::cargar_todas(&mut doc, original.as_deref());
+                    Ok((doc, avisos))
+                })
+                .unwrap_or_else(|_| Err("la copia esta dañada".into()));
                 let _ = tx.send(res);
             });
-        self.pantalla = Pantalla::Inicio;
-        self.aviso_inicio = Some(format!("Recuperando {}…", r.nombre()));
-        self.abriendo = Some(Abriendo {
+        self.decir(format!("Recuperando {}…", r.nombre()));
+        self.abriendo.push(Abriendo {
             ruta: r.copia,
             llega: rx,
             recuperado: Some(r.original),
@@ -766,11 +943,19 @@ impl App {
     /// Hace la copia del autoguardado si toca (se mira en cada vuelta: es
     /// comparar dos numeros y una hora).
     fn autoguardar(&mut self) {
-        let (Some(cada), Pantalla::Mesa(m)) = (self.cada_autoguardado, &mut self.pantalla) else {
+        let Some(cada) = self.cada_autoguardado else {
             return;
         };
-        if m.autoguardado.toca(&m.sesion.dibujo, Instant::now(), cada) {
-            m.autoguardado.lanzar(&m.sesion.dibujo);
+        let Some(p) = self.planos_mut() else {
+            return;
+        };
+        // Todos los abiertos, no solo el que se ve.
+        let ahora = Instant::now();
+        for d in p.todos_mut() {
+            let m = &mut *d.mesa;
+            if m.autoguardado.toca(&m.sesion.dibujo, ahora, cada) {
+                m.autoguardado.lanzar(&m.sesion.dibujo);
+            }
         }
     }
 
@@ -826,10 +1011,18 @@ impl App {
     fn accion(&mut self, a: Accion) {
         let (w, h, e) = (self.w as f32, self.h as f32, self.e);
         match a {
-            Accion::PlanoNuevo => {
-                if self.puede_dejar_el_dibujo() {
-                    self.pantalla = Pantalla::Mesa(Box::new(Mesa::nueva(Dibujo::nuevo())));
+            Accion::PlanoNuevo => self.abrir_mesa(Mesa::nueva(Dibujo::nuevo())),
+            Accion::Documento(i) => {
+                self.volver_a_los_planos();
+                if let Pantalla::Mesa(p) = &mut self.pantalla
+                    && p.activar(i)
+                {
+                    self.al_cambiar_de_plano();
                 }
+            }
+            Accion::CerrarDocumento(i) => {
+                self.volver_a_los_planos();
+                self.cerrar_plano(Some(i));
             }
             Accion::AbrirPlano => {
                 if let Some(r) = dialogos::abrir(self.hwnd, dialogos::Que::Plano) {
@@ -849,10 +1042,11 @@ impl App {
             }
             Accion::MetradoBim => self.metrado_bim(),
             Accion::Inicio => {
-                if self.puede_dejar_el_dibujo() {
-                    self.pantalla = Pantalla::Inicio;
-                    self.aviso_inicio = None;
+                // Los planos no se cierran: esperan en sus pestanas.
+                if let Pantalla::Mesa(p) = std::mem::replace(&mut self.pantalla, Pantalla::Inicio) {
+                    self.aparcados = Some(p);
                 }
+                self.aviso_inicio = None;
             }
             Accion::Guardar => {
                 self.guardar(false);
@@ -970,6 +1164,8 @@ impl App {
         let recientes = &self.recientes;
         let recuperables = &self.recuperables;
         let aviso = self.aviso_inicio.clone();
+        // Las pestanas de los planos que esperan mientras se ve el inicio.
+        let aparcadas = self.aparcados.as_ref().map(documentos::etiquetas);
         // El globo del boton bajo el raton (de las zonas del fotograma anterior).
         let globo = cursor.and_then(|(x, y)| {
             self.zonas
@@ -982,6 +1178,10 @@ impl App {
         {
             Pantalla::Inicio => {
                 zonas = inicio::pintar(p, w, h, e, recientes, recuperables, cursor);
+                if let Some(v) = &aparcadas {
+                    let r = crate::ui::rect(0.0, 0.0, w, tema::ALTO_DOCUMENTOS * e);
+                    documentos::pintar(p, r, e, v, None, cursor, &mut zonas);
+                }
                 if let Some(a) = &aviso {
                     p.texto_con_fondo(
                         a,
@@ -995,6 +1195,9 @@ impl App {
             }
             Pantalla::Mesa(m) => {
                 zonas = m.pintar(p, w, h, e);
+                let r = m.disp(w, h, e).documentos;
+                let v = documentos::etiquetas(m);
+                documentos::pintar(p, r, e, &v, Some(m.indice_activo()), cursor, &mut zonas);
                 if let Some((t, x, y)) = &globo {
                     crate::ui::globo(p, t, *x, *y, e, w);
                 }

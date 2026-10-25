@@ -36,6 +36,8 @@ pub fn pestanas() -> Vec<Grupo> {
 /// Donde va cada parte, en pixeles.
 #[derive(Debug, Clone, Copy)]
 pub struct Disposicion {
+    /// La tira de los planos abiertos (la pinta la ventana).
+    pub documentos: RectF,
     pub cinta: RectF,
     pub panel: RectF,
     pub ordenes: RectF,
@@ -56,18 +58,21 @@ const VISTAS: usize = 20;
 
 /// La disposicion con `lineas` de historial en la linea de ordenes.
 pub fn disposicion_con(w: f32, h: f32, e: f32, lineas: usize) -> Disposicion {
+    let arriba = tema::ALTO_DOCUMENTOS * e;
     let alto_cinta = (tema::ALTO_PESTANAS + tema::ALTO_BOTONES) * e;
     let alto_estado = tema::ALTO_ESTADO * e;
     let alto_ordenes = (tema::ALTO_LINEA * lineas as f32 + tema::ALTO_ORDEN + 6.0) * e;
     let ancho_panel = (tema::ANCHO_PANEL * e).min(w * 0.4);
     let abajo = alto_estado + alto_ordenes;
-    let medio = (h - alto_cinta - abajo).max(0.0);
+    let medio = (h - arriba - alto_cinta - abajo).max(0.0);
+    let y_medio = arriba + alto_cinta;
     Disposicion {
-        cinta: rect(0.0, 0.0, w, alto_cinta),
-        panel: rect(w - ancho_panel, alto_cinta, ancho_panel, medio),
+        documentos: rect(0.0, 0.0, w, arriba),
+        cinta: rect(0.0, arriba, w, alto_cinta),
+        panel: rect(w - ancho_panel, y_medio, ancho_panel, medio),
         ordenes: rect(0.0, h - abajo, w, alto_ordenes),
         estado: rect(0.0, h - alto_estado, w, alto_estado),
-        dibujo: rect(0.0, alto_cinta, (w - ancho_panel).max(0.0), medio),
+        dibujo: rect(0.0, y_medio, (w - ancho_panel).max(0.0), medio),
     }
 }
 
@@ -621,7 +626,7 @@ impl Mesa {
         let alto = tema::ALTO_PESTANAS * e;
         let tam = tema::LETRA * e;
         let mut x = 8.0 * e;
-        let fila = |x: f32, ancho: f32| rect(x, 5.0 * e, ancho, alto - 10.0 * e);
+        let fila = |x: f32, ancho: f32| rect(x, c.y + 5.0 * e, ancho, alto - 10.0 * e);
         // Lo de siempre a la izquierda.
         for (texto, accion, ayuda) in [
             ("Inicio", Accion::Inicio, "Volver a la pantalla de inicio"),
@@ -655,7 +660,7 @@ impl Mesa {
         }
         x += 14.0 * e;
         p.rellenar(
-            rect(x - 8.0 * e, 9.0 * e, 1.0, alto - 18.0 * e),
+            rect(x - 8.0 * e, c.y + 9.0 * e, 1.0, alto - 18.0 * e),
             tema::BORDE,
         );
         for g in pestanas() {
@@ -683,12 +688,18 @@ impl Mesa {
         let t = self.titulo();
         let (tw, _) = p.medir_texto(&t, tam);
         if c.ancho - tw - 16.0 * e > x {
-            p.texto(&t, c.ancho - tw - 16.0 * e, 9.0 * e, tam, tema::TEXTO_SUAVE);
+            p.texto(
+                &t,
+                c.ancho - tw - 16.0 * e,
+                c.y + 9.0 * e,
+                tam,
+                tema::TEXTO_SUAVE,
+            );
         }
         // Los botones de la pestana.
         let ids = ordenes::de_grupo(self.pestana);
         let mut x = 8.0 * e;
-        let y = alto;
+        let y = c.y + alto;
         let alto_b = tema::ALTO_BOTONES * e - 8.0 * e;
         if self.pestana == Grupo::Medir {
             // Lo que no es una orden del dibujo: el metrado.
@@ -1628,8 +1639,12 @@ mod pruebas {
         let d = disposicion(1600.0, 900.0, 1.0);
         assert!((d.dibujo.ancho + d.panel.ancho - 1600.0).abs() < 1e-3);
         assert!(
-            (d.cinta.alto + d.dibujo.alto + d.ordenes.alto + d.estado.alto - 900.0).abs() < 1e-3
+            (d.documentos.alto + d.cinta.alto + d.dibujo.alto + d.ordenes.alto + d.estado.alto
+                - 900.0)
+                .abs()
+                < 1e-3
         );
+        assert!((d.cinta.y - d.documentos.alto).abs() < 1e-3);
         // Ventana diminuta: nada negativo.
         let d = disposicion(100.0, 50.0, 2.0);
         assert!(d.dibujo.alto >= 0.0 && d.dibujo.ancho >= 0.0);
