@@ -48,12 +48,47 @@ cotas, sombreados, presentaciones).
 
 | Grupo | Orden (alias) |
 |---|---|
-| Dibujo | LINEA (L), POLILINEA (PL), RECTANGULO (REC), CIRCULO (C), ARCO (A), TEXTO (T) |
-| Modificar | MOVER (M), COPIAR (CO), GIRAR (GI, RO), ESCALA (SC), SIMETRIA (MI), DESFASE (O), RECORTAR (TR), ALARGAR (EX), EMPALME (F), CHAFLAN (CHA), MATRIZ (AR), MATRIZPOLAR (MP), DESCOMPONER (X), BORRAR (E, B) |
+| Dibujo | LINEA (L), POLILINEA (PL), RECTANGULO (REC), CIRCULO (C), ARCO (A), TEXTO (T), PUNTO (PO), POLIGONO (POL), ELIPSE (EL), DIVIDIR (DIV), GRADUAR (ME) |
+| Modificar | MOVER (M), COPIAR (CO), GIRAR (GI, RO), ESCALA (SC), SIMETRIA (MI), DESFASE (O), RECORTAR (TR), ALARGAR (EX), EMPALME (F), CHAFLAN (CHA), MATRIZ (AR), MATRIZPOLAR (MP), DESCOMPONER (X), BORRAR (E), ESTIRAR (S), PARTIR (BR), UNIR (J), LONGITUD (LEN), ALINEAR (ALI), IGUALAR (MA), EDITARPOL (PE) |
 | Arquitectura | MURO (MU), EJES (EJ), PUERTA (PU), VENTANA (VE) |
-| Anotar | COTA (COT, DAL), NIVEL (NPT), NORTE (NO), LAMINA (LA) |
+| Anotar | COTALINEAL (DLI), COTAALINEADA (DAL), CONTINUA (DCO), LINEABASE (DBA), RADIO (DRA), DIAMETRO (DDI), ANGULAR (DAN), ESCALACOTA (EC), COTA desmontada (COT), MTEXTO (MT), EDITARTEXTO (ED), ALTOTEXTO (AT), NIVEL (NPT), NORTE (NO), LAMINA (LA) |
+| Bloques | BLOQUE (B), INSERTAR (I), BIBLIOTECA (BIB), SOMBREADO (SO, HATCH) |
 | Medir | DISTANCIA (DI), AREA (AA) |
-| Edición | DESHACER (U, Ctrl+Z), REHACER (Ctrl+Y) |
+| Vista y capas | ZOOM (Z), ZE, CAPA (CA), LAYISO, LAYUNISO, LAYOFF, LAYON, LAYMCUR, LAYLCK, LAYULK |
+| Selección | SS (similares), SP (previa), SLC (por capa), INV (invertir) |
+| Edición | DESHACER (U, Ctrl+Z), REHACER (Ctrl+Y), portapapeles (Ctrl+C, Ctrl+X, Ctrl+V) |
+
+Cada orden nueva vive en su módulo de `crates/cad-nucleo/src/herramientas/` (el trait
+`Herramienta`): añadir una no toca la sesión, y la cinta la saca sola por su grupo.
+
+#### Bloques, sombreados y cotas
+
+- **BLOQUE** convierte lo elegido en un bloque con su punto base; **INSERTAR** lo pone con
+  escala y giro. La **biblioteca** trae 19 piezas en milímetros: inodoro, lavatorio, ducha,
+  tina, lavadero, cocina, refrigeradora, camas, mesa con sillas, sofá, escritorio, puerta,
+  tomacorriente, interruptor, luminaria, sumidero, registro y columna 30×30.
+- **SOMBREADO** con un clic dentro: busca el contorno cerrado más pequeño alrededor (también
+  entre líneas sueltas que se cruzan, con islas), con SÓLIDO, ANSI31, ANSI37 y ARENA.
+- **Cotas de verdad** (entidades `DIMENSION` con su bloque, como las de AutoCAD): lineal,
+  alineada, continua, línea base, radio, diámetro y angular, con marcas de arquitectura y un
+  estilo `PIXPIN` a la escala del dibujo.
+
+#### Rendimiento en planos grandes
+
+Pensado para 200 000 a 500 000 objetos en un Core i3 de 3.ª generación:
+
+- El **índice espacial** se pone al día solo con lo que cambió (`Dibujo::cambios_desde`):
+  mover una línea en un plano de 220 000 objetos pasa de 75 ms a 0,1 ms.
+- Enganches, clic, ventana y captura miran solo las celdas cercanas (de microsegundos a
+  1–2 ms con todo el plano en el recuadro); la vista previa de mover o girar todo lo elegido
+  transforma las formas del índice (de 157 ms a unos 3 ms).
+- En la tarjeta gráfica el plano va **por cubos** de unos 4 000 objetos, convertidos en
+  varios hilos: una edición vuelve a convertir solo los cubos que toca, y lo de antes sigue
+  a la vista mientras tanto.
+- El resaltado de lo elegido se guarda por versión y solo pinta lo visible; los
+  movimientos del ratón seguidos se juntan en uno.
+
+Las pruebas de tiempos: `cargo test -p cad-nucleo --release -- --ignored rendimiento --nocapture`.
 
 Los alias en inglés de AutoCAD también valen (`LINE`, `TRIM`, `OFFSET`, `FILLET`…).
 
@@ -83,7 +118,7 @@ Lo que en un CAD genérico son diez pasos:
   órdenes de siempre. Se puede arrastrar un archivo a la ventana.
 - **Mesa de trabajo**: el plano en el centro (con la GPU del visor de PixPin; se vuelve a
   dibujar en otro hilo con cada cambio), la cinta por pestañas (Dibujo, Modificar,
-  Arquitectura, Anotar, Medir), capas y propiedades a la derecha, y abajo la línea de
+  Arquitectura, Anotar, Bloques, Medir, Vista), capas y propiedades a la derecha, y abajo la línea de
   órdenes con autocompletado y la barra de estado.
 - Cursor en cruz, símbolos de enganche, vista previa de cada orden, recuadro azul o verde.
 - Los modelos BIM se abren en la **ventana 3D de PixPin** (órbita, caja de sección, niveles,
@@ -163,9 +198,9 @@ Ver [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 ## Lo que sigue
 
-- Cotas como entidades `DIMENSION` de verdad (hoy van desmontadas en líneas y texto, que
-  se ven igual en cualquier programa pero no se actualizan solas).
-- Sombreados, insertar bloques y bibliotecas de bloques (mobiliario, aparatos sanitarios).
+- Cotas asociativas (que sigan a lo medido al moverlo) y estilos hijos para radios y ángulos.
+- Sombreados asociativos y cerrar huecos pequeños del contorno.
+- Que apagar o bloquear una capa no rehaga todo el índice.
 - Portar desde `referencia/` el anotado con el motor del lienzo, imprimir láminas y
   exportar a PDF.
 - Propiedades BIM: leer y editar los `Pset` de cada elemento del IFC.
