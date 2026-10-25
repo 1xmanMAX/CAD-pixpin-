@@ -11,3 +11,6 @@ description = "El nucleo de edicion de CAD-pixpin: ordenes, enganches, deshacer 
 # y ESCRIBE DWG y DXF, y trae mover, girar, escalar y simetria para todas las
 # entidades. Rust puro: este crate se prueba tambien fuera de Windows.
 opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac" }
+# Los datos de los modelos BIM (Revit con rvt-rs, IFC con ifc-lite) para
+# REVITAPLANTA y EXPLORARBIM. No depende de este crate (sin ciclos).
+cad-bim-datos = { path = "../cad-bim-datos" }

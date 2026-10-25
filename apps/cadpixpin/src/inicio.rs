@@ -124,11 +124,29 @@ pub fn pintar(
             r.ancho - 36.0 * e,
             tema::TEXTO_SUAVE,
         );
+        let bim = accion == Accion::AbrirModelo;
         zonas.push(Zona {
             r,
             accion,
             ayuda: String::new(),
         });
+        // En la del BIM, «Explorar datos»: el proyecto, los niveles y los
+        // parametros de cada elemento, sin abrirlo en 3D.
+        if bim {
+            let t = "Explorar datos";
+            let bw = p.medir_texto(t, 12.0 * e).0 + 20.0 * e;
+            ui::boton(
+                p,
+                &mut zonas,
+                rect(r.x + r.ancho - bw - 14.0 * e, r.y + 14.0 * e, bw, 26.0 * e),
+                t,
+                12.0 * e,
+                ui::Estilo::Elegido,
+                encima,
+                Accion::ExplorarBim,
+                "Ver los datos de un IFC o Revit: proyecto, niveles, elementos y parametros; tablas y exportar a CSV, JSON y Excel",
+            );
+        }
     }
     y += th + 10.0 * e;
     let enlace = "Metrado de un modelo BIM a CSV (por nivel y partida)…";

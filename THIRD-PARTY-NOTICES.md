@@ -59,3 +59,21 @@ SOFTWARE.
 Módulos: `crates/pixpin-render/src/icono/material.rs` y los iconos de `apps/pixpin/src/sincronizar.rs`: trazados `d` de `src/<grupo>/<nombre>/materialicons/24px.svg` del repositorio `google/material-design-icons`, los mismos `Icons.Filled.*` que usa PixPin Android.
 
 Apache License 2.0 — Copyright Google LLC. Texto completo en <https://www.apache.org/licenses/LICENSE-2.0>. Los iconos se usan sin modificar.
+
+## Dependencias y datos de prueba de `cad-bim-datos`
+
+Se usan como dependencias (no se copia su código):
+
+- **rvt-rs** (`rvt`, Apache-2.0, github.com/DrunkOnJava/rvt-rs, rev `120e2f9`): leer Revit y pasarlo a IFC4, GLB y planta.
+- **ifc-lite** (`ifc-lite-core`, `ifc-lite-processing`, MPL-2.0, github.com/LTplus-AG/ifc-lite): leer IFC.
+- **rust_xlsxwriter** (MIT OR Apache-2.0, github.com/jmcnamara/rust_xlsxwriter): escribir Excel.
+- **png** (MIT OR Apache-2.0, github.com/image-rs/image-png): la miniatura de Revit.
+- **roxmltree** (MIT OR Apache-2.0): los parametros del Atom de Revit.
+
+Ficheros de prueba en `crates/cad-bim-datos/tests/datos/`:
+
+- `architectural-2024.rvt`, `structural-2023.rvt`, `mep-2024.rvt`, `synthetic-project.ifc`, `synthetic-structural.ifc`: sinteticos de rvt-rs (corpus tier1 y `tests/fixtures`), Apache-2.0.
+- `empty.rfa`: de DynamoDS/RevitTestFramework (`src/Tests/Samples/empty.rfa`), MIT, Copyright 2014 Autodesk.
+- `Revit_IFC5_Einhoven.rvt`: de magnetar-io/revit-test-datasets (`Revit/Revit_IFC5_Einhoven.rvt`, sha256 `d3a0c6d3…a948`), MIT.
+- `rico.ifc`: hecho a mano para estas pruebas.
+

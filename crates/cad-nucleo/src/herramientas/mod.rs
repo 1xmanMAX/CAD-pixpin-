@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use crate::herramienta::Registro;
 
+pub mod bim;
 pub mod bloques;
 pub mod capas;
 pub mod cotas;
@@ -30,6 +31,7 @@ const MODULOS: &[&[Registro]] = &[
     capas::REGISTROS,
     portapapeles::REGISTROS,
     seleccionar::REGISTROS,
+    bim::REGISTROS,
 ];
 
 static CATALOGO: LazyLock<Vec<&'static Registro>> =

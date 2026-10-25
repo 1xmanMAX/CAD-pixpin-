@@ -688,10 +688,8 @@ impl App {
                     self.decir("Ver el dibujo en 3D aun no esta listo".into());
                 }
                 PedidoApp::ExplorarBim(ruta) => {
-                    self.decir(format!(
-                        "El explorador BIM aun no esta listo ({})",
-                        ruta.display()
-                    ));
+                    self.decir(format!("Explorando los datos de {}…", ruta.display()));
+                    crate::explorador_bim::abrir(ruta, self.avisos.0.clone());
                 }
                 PedidoApp::Aviso(t) => {
                     pixpin_shell::dialogo::avisar_al_frente("CAD-pixpin", &t);
@@ -848,6 +846,11 @@ impl App {
                 self.recuperables.retain(|r| r.copia != c);
             }
             Accion::MetradoBim => self.metrado_bim(),
+            Accion::ExplorarBim => {
+                if let Some(r) = dialogos::abrir(self.hwnd, dialogos::Que::Modelo) {
+                    crate::explorador_bim::abrir(r, self.avisos.0.clone());
+                }
+            }
             Accion::Inicio => {
                 if self.puede_dejar_el_dibujo() {
                     self.pantalla = Pantalla::Inicio;

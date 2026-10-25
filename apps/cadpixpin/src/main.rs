@@ -19,6 +19,8 @@ mod dialogos;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod encima;
 #[cfg(windows)]
+mod explorador_bim;
+#[cfg(windows)]
 mod inicio;
 #[cfg(windows)]
 mod mesa;

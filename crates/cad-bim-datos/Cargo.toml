@@ -1,0 +1,27 @@
+[package]
+name = "cad-bim-datos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Los datos de un modelo BIM (Revit e IFC): proyecto, niveles, elementos con sus parametros, tablas y exportaciones"
+
+[dependencies]
+# Revit sin Revit: rvt-rs (Apache-2.0), la misma revision que pixpin-bim.
+rvt = { git = "https://github.com/DrunkOnJava/rvt-rs", rev = "120e2f9" }
+# El lector STEP de ifc-lite (MPL-2.0), el mismo que usa pixpin-bim: las
+# entidades y sus atributos; y sus mallas para la caja de cada elemento.
+ifc-lite-core = "20.3"
+ifc-lite-processing = "20.3"
+# La miniatura de Revit a pixeles (MIT OR Apache-2.0, ya en Cargo.lock).
+png = "0.18"
+# Los grupos de parametros del Atom de Revit (MIT/Apache, ya lo usa pixpin-bim).
+roxmltree = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Las tablas en Excel, una hoja por categoria (MIT OR Apache-2.0).
+rust_xlsxwriter = "0.101"
+
+[dev-dependencies]
+# Abrir el .xlsx escrito en las pruebas (ya esta en Cargo.lock).
+zip = { version = "2", default-features = false, features = ["deflate"] }
