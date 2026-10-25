@@ -388,7 +388,11 @@ impl Mesa {
         if self.emergente.take().is_some() {
             return;
         }
-        if self.sesion.activa().is_some() || !self.linea.escrito.is_empty() {
+        // Con una orden, un pinzamiento tomado (no pide objetos) o algo escrito.
+        if self.sesion.activa().is_some()
+            || !self.sesion.pide_objetos()
+            || !self.linea.escrito.is_empty()
+        {
             self.enter();
             return;
         }
@@ -453,7 +457,9 @@ impl Mesa {
 
     pub fn enter(&mut self) {
         self.emergente = None;
-        let t = self.linea.tomar(self.sesion.activa().is_none());
+        // Una orden si no hay ninguna en marcha ni un pinzamiento tomado.
+        let es_orden = self.sesion.activa().is_none() && self.sesion.pide_objetos();
+        let t = self.linea.tomar(es_orden);
         self.sesion.escribir(&t);
     }
 
@@ -483,7 +489,7 @@ impl Mesa {
 
     /// Flecha arriba o abajo: el historial de lo escrito.
     pub fn historial(&mut self, arriba: bool) {
-        let solo_ordenes = self.sesion.activa().is_none();
+        let solo_ordenes = self.sesion.activa().is_none() && self.sesion.pide_objetos();
         if arriba {
             self.linea.subir(solo_ordenes);
         } else {

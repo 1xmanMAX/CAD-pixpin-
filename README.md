@@ -87,6 +87,12 @@ Pensado para 200 000 a 500 000 objetos en un Core i3 de 3.ª generación:
   a la vista mientras tanto.
 - El resaltado de lo elegido se guarda por versión y solo pinta lo visible; los
   movimientos del ratón seguidos se juntan en uno.
+- **Mover, copiar o borrar todo** (Ctrl+A) en 220 000 objetos: 0,6 s, 2,4 s y 0,1 s
+  (antes, por apuntar cada cambio buscándolo en una lista, 19 s y 15 s). El resumen de lo
+  elegido del panel se calcula una vez por versión.
+- Las vueltas del bucle de más de 60 ms se apuntan en el registro (con el último evento),
+  para encontrar lo lento. Un plano de prueba grande: `cargo run -p cad-nucleo --release
+  --example plano_de_prueba -- prueba.dwg 150000`.
 
 Las pruebas de tiempos: `cargo test -p cad-nucleo --release -- --ignored rendimiento --nocapture`.
 
@@ -121,6 +127,12 @@ Lo que en un CAD genérico son diez pasos:
   Arquitectura, Anotar, Bloques, Medir, Vista), capas y propiedades a la derecha, y abajo la línea de
   órdenes con autocompletado y la barra de estado.
 - Cursor en cruz, símbolos de enganche, vista previa de cada orden, recuadro azul o verde.
+- **Preselección**: lo que elegiría un clic se resalta al pasar por encima.
+- **Entrada dinámica** (`F12`): lo que pide la orden y lo que se escribe, junto al cursor.
+- **Propiedades** de lo elegido: cuántos y de qué tipo, **Similares** (SS), y capa, color (la
+  paleta ACI entera, PorCapa y PorBloque), tipo de línea y grosor, cada uno con su lista; cada
+  cambio se deshace de una vez.
+- Coordenadas con los decimales que distinguen un píxel a la escala de la vista.
 - Los modelos BIM se abren en la **ventana 3D de PixPin** (órbita, caja de sección, niveles,
   medidas de cada pieza).
 
@@ -128,13 +140,16 @@ Lo que en un CAD genérico son diez pasos:
 
 | | |
 |---|---|
-| Escribir + `Enter` o `Espacio` | La orden, un punto, un número o una opción |
+| Escribir + `Enter` o `Espacio` | La orden, un punto, un número o una opción (también en el inicio: abre un plano nuevo) |
 | `Enter` / `Espacio` sin nada | Repetir la última orden |
-| Botón derecho | Enter |
-| `Esc` | Cancelar la orden o soltar lo elegido |
+| `↑` / `↓` | Lo escrito antes (en «Orden:», solo las órdenes) |
+| `Tab` / `Mayús+Tab` | Completar la orden, o la opción `[A/B]` de la orden en marcha |
+| Botón derecho | Enter en una orden; sin orden, el menú: Repetir, Cancelar, Deshacer, Copiar, Pegar, Borrar, Mover, Similares, Propiedades |
+| `Esc` | Cerrar el menú, borrar lo escrito, cancelar la orden y, otra vez, soltar lo elegido |
+| Con un pinzamiento tomado | Clic (con enganches) o escribir el punto (`@0,500`); `Enter` lo suelta |
 | `Supr` | Borrar lo elegido |
 | Rueda / botón central | Zoom al cursor / mover la vista; doble clic central: ver todo |
-| `F3` `F8` `F9` `F10` | Enganche, orto, rejilla, polar |
+| `F3` `F8` `F9` `F10` `F12` | Enganche, orto, rejilla, polar, entrada dinámica |
 | `Ctrl+S`, `Ctrl+Mayús+S`, `Ctrl+O`, `Ctrl+N` | Guardar, guardar como, abrir, nuevo |
 | `Ctrl+A` | Elegir todo |
 

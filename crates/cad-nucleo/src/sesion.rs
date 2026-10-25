@@ -549,6 +549,15 @@ impl Sesion {
     /// **Lo que se escribe** en la linea de ordenes y Enter. Sin orden, el
     /// nombre de una; vacio, repite la ultima.
     pub fn escribir(&mut self, texto: &str) {
+        // Con un pinzamiento tomado: su punto nuevo escrito, o Enter lo suelta.
+        if self.pinzamiento.is_some() {
+            match entrada::interpretar(texto, self.base()) {
+                Entrada::Punto(p) => self.clic(p, 0.0),
+                Entrada::Vacio => self.pinzamiento = None,
+                _ => self.decir("Escriba el punto nuevo (x,y o @dx,dy) o Enter para soltarlo"),
+            }
+            return;
+        }
         let Some(id) = self.activa else {
             if texto.trim().is_empty() {
                 if let Some(u) = self.ultima {
@@ -1898,10 +1907,18 @@ mod pruebas {
         assert!(!s.pide_objetos());
         s.clic([100.0, 50.0], 2.0);
         assert!(s.pide_objetos());
+        // Escrito con @ desde el pinzamiento; Enter con uno tomado lo suelta
+        // sin repetir la ultima orden.
+        assert!(s.tomar_pinzamiento([100.0, 50.0], 2.0));
+        s.escribir("@0,10");
+        assert!(s.tomar_pinzamiento([100.0, 60.0], 2.0));
+        s.escribir("");
+        assert_eq!(s.activa(), None);
+        assert!(s.pide_objetos());
         let EntityType::Line(l) = s.dibujo.doc.model_space_entities().next().unwrap() else {
             panic!()
         };
-        assert_eq!(l.end.y, 50.0);
+        assert_eq!(l.end.y, 60.0);
     }
 
     #[test]
