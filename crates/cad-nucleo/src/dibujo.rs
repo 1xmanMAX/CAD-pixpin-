@@ -525,9 +525,12 @@ impl Dibujo {
     }
 
     /// **Abre un DWG o un DXF**: primero estricto y, si se salto algo, en
-    /// modo tolerante (lo que hace OpenCADStudio).
+    /// modo tolerante (lo que hace OpenCADStudio). Carga sus referencias
+    /// externas (las que no esten se quedan vacias: ver
+    /// [`crate::xref::leer_con_referencias`] para saber cuales).
     pub fn abrir(ruta: &Path) -> Result<Dibujo, String> {
-        Ok(Dibujo::de_documento(leer(ruta)?, Some(ruta.to_path_buf())))
+        let (doc, _) = crate::xref::leer_con_referencias(ruta)?;
+        Ok(Dibujo::de_documento(doc, Some(ruta.to_path_buf())))
     }
 
     /// **Guarda** en su ruta (DWG o DXF por la extension).
@@ -544,9 +547,14 @@ impl Dibujo {
                 .map(|e| e.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
+        // Las referencias externas: sus rutas relativas siguen valiendo desde
+        // la carpeta nueva, y se guardan como referencias (sin su contenido).
+        crate::xref::rebasar(&mut self.doc, self.ruta.as_deref(), ruta);
+        let copia = crate::xref::para_guardar(&self.doc);
+        let doc = copia.as_ref().unwrap_or(&self.doc);
         let r = match Formato::de_ruta(ruta) {
-            Formato::Dxf => opencadcodec::DxfWriter::new(&self.doc).write_to_file(&tmp),
-            Formato::Dwg => opencadcodec::DwgWriter::write_to_file(&tmp, &self.doc),
+            Formato::Dxf => opencadcodec::DxfWriter::new(doc).write_to_file(&tmp),
+            Formato::Dwg => opencadcodec::DwgWriter::write_to_file(&tmp, doc),
         };
         r.map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, ruta).map_err(|e| e.to_string())?;
@@ -852,6 +860,17 @@ impl Transaccion<'_> {
         let partes = match &e {
             // Un bloque se desmonta en lo que tiene su definicion, ya puesto
             // en su sitio, y queda donde estaba el bloque (no en la definicion).
+            // Una referencia externa no se descompone (como en AutoCAD: antes
+            // se une con UNIRREF).
+            EntityType::Insert(i)
+                if self
+                    .doc
+                    .block_records
+                    .get(&i.block_name)
+                    .is_some_and(crate::xref::es_referencia) =>
+            {
+                return Vec::new();
+            }
             EntityType::Insert(i) => {
                 let mut v = crate::bloque::descomponer(self.doc, i);
                 for p in &mut v {

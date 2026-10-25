@@ -42,13 +42,19 @@ pub fn existe(doc: &CadDocument, nombre: &str) -> bool {
     doc.block_records.contains(nombre)
 }
 
-/// **Los bloques con nombre** del dibujo (sin los espacios, los anonimos ni
-/// las referencias externas), en orden alfabetico.
+/// **Los bloques con nombre** del dibujo (sin los espacios, los anonimos,
+/// las referencias externas ni lo que estas traen, `REF|BLOQUE`), en orden
+/// alfabetico.
 pub fn nombres(doc: &CadDocument) -> Vec<String> {
     let mut v: Vec<String> = doc
         .block_records
         .iter()
-        .filter(|b| !b.name.starts_with('*') && !b.flags.anonymous && !b.flags.is_xref)
+        .filter(|b| {
+            !b.name.starts_with('*')
+                && !b.flags.anonymous
+                && !crate::xref::es_referencia(b)
+                && !b.name.contains(crate::xref::SEPARADOR)
+        })
         .map(|b| b.name.clone())
         .collect();
     v.sort_by_key(|n| n.to_uppercase());

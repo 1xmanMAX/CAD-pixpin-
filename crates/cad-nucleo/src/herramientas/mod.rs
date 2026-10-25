@@ -12,6 +12,7 @@ pub mod dibujo;
 pub mod modificar;
 pub mod portapapeles;
 pub mod puntos;
+pub mod referencias;
 pub mod seleccionar;
 pub mod sombreado;
 pub mod textos;
@@ -29,6 +30,7 @@ const MODULOS: &[&[Registro]] = &[
     vista::REGISTROS,
     capas::REGISTROS,
     portapapeles::REGISTROS,
+    referencias::REGISTROS,
     seleccionar::REGISTROS,
 ];
 
