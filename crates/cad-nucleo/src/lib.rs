@@ -14,6 +14,7 @@ pub mod enganche;
 pub mod entrada;
 pub mod especialidad;
 pub mod formas;
+pub mod formatos;
 pub mod geo;
 pub mod herramienta;
 pub mod herramientas;

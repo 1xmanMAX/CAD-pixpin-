@@ -15,6 +15,12 @@ opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev =
     # quick-xml, MIT, para el COLLADA).
     "import",
 ] }
+# Descomprimir los flujos de los PDF que se importan y comprimir los que se
+# exportan (`formatos::pdf`). Ya estaba en el arbol (opencadcodec, pixpin-pdf).
+flate2 = "1.1"
+# Leer los SVG que se importan (`formatos::svg`). Ya estaba en el arbol
+# (pixpin-bim). MIT o Apache-2.0, sin dependencias.
+roxmltree = "0.20"
 
 [dev-dependencies]
 # Las pruebas de EXPORTAR3D vuelven a leer el IFC escrito con el mismo lector

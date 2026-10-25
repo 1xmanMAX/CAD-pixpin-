@@ -103,6 +103,16 @@ fn formas_en(e: &EntityType, profundidad: u32, v: &mut Vec<Forma>) {
         )),
         EntityType::LwPolyline(p) => v.extend(tramos_lw(p)),
         EntityType::Text(_) | EntityType::MText(_) | EntityType::Point(_) => {}
+        // Una imagen, por su marco (asi se elige y se engancha).
+        EntityType::RasterImage(im) => {
+            let c = im.corners();
+            for i in 0..4 {
+                let (a, b) = (p2(&c[i]), p2(&c[(i + 1) % 4]));
+                if geo::dist(a, b) > geo::EPS {
+                    v.push(Forma::Segmento { a, b });
+                }
+            }
+        }
         // Lo demas (polilineas viejas, splines, elipses, cotas, solidos…),
         // desmontado en piezas simples por opencadcodec.
         otro if profundidad < PROFUNDIDAD => {

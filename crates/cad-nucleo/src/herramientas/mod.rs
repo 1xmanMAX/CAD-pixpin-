@@ -9,6 +9,7 @@ pub mod bloques;
 pub mod capas;
 pub mod cotas;
 pub mod dibujo;
+pub mod formatos;
 pub mod modificar;
 pub mod portapapeles;
 pub mod puntos;
@@ -34,6 +35,7 @@ const MODULOS: &[&[Registro]] = &[
     referencias::REGISTROS,
     seleccionar::REGISTROS,
     tresd::REGISTROS,
+    formatos::REGISTROS,
 ];
 
 static CATALOGO: LazyLock<Vec<&'static Registro>> =
