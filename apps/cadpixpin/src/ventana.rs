@@ -63,6 +63,16 @@ fn apuntar(e: Evento) {
     COLA.with(|c| c.borrow_mut().push_back(e));
 }
 
+/// **El siguiente evento**; de varios movimientos del raton seguidos, solo
+/// el ultimo (cada uno buscaria enganches y pintaria para nada).
+fn sacar_evento(cola: &mut VecDeque<Evento>) -> Option<Evento> {
+    let mut ev = cola.pop_front()?;
+    while matches!(ev, Evento::Mover(..)) && matches!(cola.front(), Some(Evento::Mover(..))) {
+        ev = cola.pop_front()?;
+    }
+    Some(ev)
+}
+
 fn xy(lp: LPARAM) -> (i32, i32) {
     (
         (lp.0 & 0xffff) as i16 as i32,
@@ -346,7 +356,7 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
                 DispatchMessageW(&m);
             }
         }
-        while let Some(ev) = COLA.with(|c| c.borrow_mut().pop_front()) {
+        while let Some(ev) = COLA.with(|c| sacar_evento(&mut c.borrow_mut())) {
             app.atender(ev);
             sucio = true;
         }
@@ -946,18 +956,13 @@ impl App {
         let mut tomado = None;
         if let Pantalla::Mesa(m) = &mut self.pantalla {
             m.hay_plano = m.plano.gpu.is_some();
-            m.caja_plano = m
-                .plano
-                .gpu
-                .as_ref()
-                .map(|(modelo, _)| crate::mesa::caja_de_modelo(modelo));
+            m.caja_plano = m.plano.gpu.as_ref().and_then(|g| g.caja);
             tomado = m.plano.gpu.take();
         }
-        let vista = match (&self.pantalla, &tomado) {
-            (Pantalla::Mesa(m), Some((modelo, _))) => {
-                Some(crate::plano::vista_de(modelo, &m.camara, self.w, self.h))
-            }
-            _ => None,
+        // Los cubos que se ven, cada uno con su vista.
+        let planos = match (&self.pantalla, &tomado) {
+            (Pantalla::Mesa(m), Some(g)) => g.planos(&m.camara, self.w, self.h),
+            _ => Vec::new(),
         };
         let pantalla = &mut self.pantalla;
         let mut encima =
@@ -969,13 +974,10 @@ impl App {
                     tracing::warn!(?err, "no se pudo pintar la interfaz");
                 }
             };
-        let r = match (&tomado, vista) {
-            (Some((_, pg)), Some(v)) => {
-                self.gpu
-                    .dibujar_con(tema::FONDO_PLANO, &[(pg, v)], &mut encima)
-            }
-            _ => self.gpu.dibujar_con(tema::FONDO_PLANO, &[], &mut encima),
-        };
+        let r = self
+            .gpu
+            .dibujar_con(tema::FONDO_PLANO, &planos, &mut encima);
+        drop(planos);
         if let Pantalla::Mesa(m) = &mut self.pantalla
             && tomado.is_some()
             && m.plano.gpu.is_none()

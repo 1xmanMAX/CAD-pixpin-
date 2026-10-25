@@ -17,7 +17,16 @@ para que sus `use` internos sigan valiendo.
 | `pixpin-geom`, `pixpin-nivel`, `pixpin-sistema`, `pixpin-shell`, `pixpin-codec`, `pixpin-docs`, `pixpin-hojas`, `pixpin-office`, `pixpin-pdf` | Lo que los de arriba necesitan para compilar. |
 
 Si en PixPin Max se arregla algo en estos crates, se puede volver a copiar
-encima: CAD-pixpin no los modifica, pone lo suyo en crates `cad-*` aparte.
+encima: CAD-pixpin no los modifica, pone lo suyo en crates `cad-*` aparte
+(salvo lo poco de «Cambios en lo copiado», que habria que volver a poner).
+
+## Cambios en lo copiado
+
+Lo minimo, y solo anadido (lo de antes funciona igual):
+
+| Donde | Que | Para que |
+|---|---|---|
+| `pixpin-cad/src/convertir.rs` | `Convertidor::espacio(doc)`: lo que se dibuja (el espacio modelo o, si no tiene nada, el papel), sacado de `recorrer`. `Convertidor::convertir_estas(entidades)`: convierte solo esas entidades (pueden no estar en el documento) con los bloques, capas y estilos del documento, y devuelve sus letras ya hechas. `Convertidor::con_textos(textos)`: empieza con esas letras. | La app parte el plano en cubos (`apps/cadpixpin/src/cubos.rs` y `plano.rs`) y al editar solo convierte los tocados, en varios hilos, sin volver a leer las fuentes en cada cubo. |
 
 ## Nuevo en CAD-pixpin
 
