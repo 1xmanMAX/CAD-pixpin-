@@ -5,6 +5,7 @@
 //! mientras tanto se ve lo de antes. La camara es la de la mesa, en
 //! coordenadas absolutas del dibujo.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -91,6 +92,10 @@ enum Pedido {
         version: u64,
         cambios: Vec<Cambio>,
         capas: Box<Table<Layer>>,
+        /// Una copia del documento cuando cambio algo de dentro de un bloque
+        /// (el `*Dn` de una cota): el hilo la necesita para dibujar sus
+        /// INSERT y cotas, y rehace solo los cubos donde estan.
+        doc: Option<Box<CadDocument>>,
     },
 }
 
@@ -235,14 +240,22 @@ impl Plano {
             d.cambios_desde(self.pedida)
         };
         let pedido = match cambios {
-            Some(hs) => Pedido::Cambios {
-                version: v,
-                cambios: hs
+            Some(hs) => {
+                let cambios: Vec<Cambio> = hs
                     .into_iter()
                     .map(|h| (h, d.doc.get_entity_arc(h)))
-                    .collect(),
-                capas: Box::new(d.doc.layers.clone()),
-            },
+                    .collect();
+                let de_bloque = cambios.iter().any(|(_, e)| {
+                    e.as_deref()
+                        .is_some_and(|e| !cubos::es_de_modelo(&d.doc, e))
+                });
+                Pedido::Cambios {
+                    version: v,
+                    cambios,
+                    capas: Box::new(d.doc.layers.clone()),
+                    doc: de_bloque.then(|| Box::new(d.doc.clone())),
+                }
+            }
             None => {
                 self.entero = v;
                 self.rehacer = false;
@@ -386,23 +399,87 @@ fn convertir_en_cubos(rx: Receiver<Pedido>, tx: Sender<Llegado>) {
                     version,
                     cambios,
                     capas,
+                    doc,
                 } => {
-                    if let Some(est) = estado.as_mut()
-                        && est.base.layers != *capas
-                    {
-                        // Los obreros ya soltaron su copia: no se clona el
-                        // documento, solo se cambian sus capas.
-                        Arc::make_mut(&mut est.base).layers = *capas;
+                    let viejo = estado.as_ref().map(|est| est.base.clone());
+                    let con_doc = doc.is_some();
+                    if let Some(est) = estado.as_mut() {
+                        if let Some(d) = doc {
+                            est.base = Arc::from(d);
+                        } else if est.base.layers != *capas {
+                            // Los obreros ya soltaron su copia: no se clona el
+                            // documento, solo se cambian sus capas.
+                            Arc::make_mut(&mut est.base).layers = *capas;
+                        }
                     }
-                    let se_puede = estado.as_ref().is_some_and(|est| {
-                        est.por_partes
-                            && cambios.iter().all(|(h, e)| {
-                                cubos::admite(&est.base, &est.reparto, *h, e.as_deref())
-                            })
-                    });
+                    // Lo de dentro de un bloque no va a ningun cubo: cuenta
+                    // por los bloques que cambian.
+                    let mut bloques: HashSet<String> = HashSet::new();
+                    let mut modelo: Vec<Cambio> = Vec::with_capacity(cambios.len());
+                    let mut imposible = false;
+                    if let (Some(est), Some(viejo)) = (estado.as_ref(), viejo.as_ref()) {
+                        for (h, e) in cambios {
+                            if est.reparto.conoce(h)
+                                || e.as_deref()
+                                    .is_some_and(|e| cubos::es_de_modelo(&est.base, e))
+                            {
+                                modelo.push((h, e));
+                                continue;
+                            }
+                            let duena = match &e {
+                                Some(e) => Some(e.common().owner_handle),
+                                None => viejo.get_entity(h).map(|v| v.common().owner_handle),
+                            };
+                            // Una que nunca se vio (anadida y quitada entre
+                            // dos pedidos) no cambia nada.
+                            let Some(duena) = duena else { continue };
+                            match cubos::bloque_de(&est.base, duena)
+                                .or_else(|| cubos::bloque_de(viejo, duena))
+                            {
+                                Some(n) => {
+                                    bloques.insert(n);
+                                }
+                                None => imposible = true,
+                            }
+                        }
+                    } else {
+                        imposible = true;
+                    }
+                    // Sin el documento de ahora no se pueden dibujar los bloques
+                    // cambiados, salvo que ya no los use nadie (se quitaron a la vez).
+                    if !bloques.is_empty() && !con_doc {
+                        let quitadas: HashSet<_> = modelo
+                            .iter()
+                            .filter(|(_, e)| e.is_none())
+                            .map(|(h, _)| *h)
+                            .collect();
+                        if estado
+                            .as_ref()
+                            .is_none_or(|est| cubos::alguien_usa(&est.reparto, &bloques, &quitadas))
+                        {
+                            imposible = true;
+                        } else {
+                            bloques.clear();
+                        }
+                    }
+                    let cambios = modelo;
+                    let se_puede = !imposible
+                        && estado.as_ref().is_some_and(|est| {
+                            est.por_partes
+                                && cambios.iter().all(|(h, e)| {
+                                    cubos::admite(&est.base, &est.reparto, *h, e.as_deref())
+                                })
+                        });
                     match estado.as_mut() {
                         Some(est) if se_puede => {
-                            let tocados = est.reparto.aplicar(cambios);
+                            let mut tocados = est.reparto.aplicar(cambios);
+                            if !bloques.is_empty() {
+                                tocados.extend(cubos::dependientes(
+                                    &est.base,
+                                    &est.reparto,
+                                    &bloques,
+                                ));
+                            }
                             if est.reparto.mayor() > CRECER * CAPACIDAD {
                                 // Se dibujo mucho en un sitio: se parte otra vez.
                                 let r = std::mem::replace(
@@ -427,6 +504,10 @@ fn convertir_en_cubos(rx: Receiver<Pedido>, tx: Sender<Llegado>) {
                             }
                         }
                         _ => {
+                            tracing::info!(
+                                version,
+                                "plano: el cambio no va por partes, todo de nuevo"
+                            );
                             estado = None;
                             Llegado::PideTodo(version)
                         }
@@ -455,15 +536,20 @@ fn juntar(cola: Vec<Pedido>) -> Vec<Pedido> {
                     version,
                     cambios,
                     capas,
+                    doc,
                 }),
                 Pedido::Cambios {
                     version: v,
                     cambios: nuevos,
                     capas: c,
+                    doc: d,
                 },
             ) => {
                 *version = v;
                 *capas = c;
+                if d.is_some() {
+                    *doc = d;
+                }
                 cubos::juntar_cambios(cambios, nuevos);
             }
             (_, p) => out.push(p),
@@ -694,6 +780,7 @@ mod pruebas {
             version: v,
             cambios: vec![(Handle::new(h), None)],
             capas: Box::default(),
+            doc: None,
         };
         let todo = |v: u64| Pedido::Todo {
             version: v,

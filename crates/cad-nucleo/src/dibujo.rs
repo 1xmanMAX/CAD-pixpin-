@@ -193,6 +193,19 @@ fn entrada<'a>(capas: &mut Capas<'a>, e: &'a EntityType) -> Option<Entrada> {
                 formas::formas(e)
             }
         }
+        // Una cota se elige por lo que dibuja su bloque `*Dn` (desmontarla
+        // daba rayas que no se ven, como una diagonal de punto a punto).
+        EntityType::Dimension(d)
+            if !d.base().block_name.is_empty()
+                && capas.doc.block_records.get(&d.base().block_name).is_some() =>
+        {
+            let propias = crate::bloque::formas_de(capas.doc, &d.base().block_name);
+            if propias.is_empty() {
+                formas::formas(e)
+            } else {
+                propias
+            }
+        }
         _ => formas::formas(e),
     };
     let caja = formas::caja(e, &f)?;
@@ -1519,6 +1532,30 @@ mod pruebas {
         // Una orden que no cambia nada no deja paso.
         d.editar("NADA", |_| {});
         assert_eq!(d.deshacer().as_deref(), Some("MOVER"));
+    }
+
+    #[test]
+    fn una_cota_se_elige_por_lo_que_dibuja_su_bloque() {
+        let mut s = crate::Sesion::nueva(Dibujo::nuevo());
+        s.escribir("dli");
+        s.escribir("0,0");
+        s.escribir("6000,0");
+        s.escribir("3000,-800");
+        let ind = s.dibujo.indice();
+        let cota = ind
+            .entradas
+            .iter()
+            .find(|e| matches!(s.dibujo.entidad(e.handle), Some(EntityType::Dimension(_))))
+            .expect("la cota esta en el indice");
+        // Su linea de cota pasa por y = -800.
+        assert!(
+            cota.formas
+                .iter()
+                .any(|f| f.distancia([3000.0, -800.0]) < 1.0)
+        );
+        // Caso negativo: la diagonal del primer origen al punto de la linea de
+        // cota no es parte de lo que se ve, y no se elige por ahi.
+        assert_eq!(crate::seleccion::elegir(&ind, [4500.0, -600.0], 10.0), None);
     }
 
     #[test]

@@ -289,15 +289,8 @@ pub fn admite(base: &CadDocument, reparto: &Reparto, h: Handle, e: Option<&Entit
         // Quitada: solo si era de las que se dibujan.
         return reparto.conoce(h);
     };
-    if !reparto.conoce(h) {
-        let duena = e.common().owner_handle;
-        let modelo = [
-            Some(base.header.model_space_block_handle),
-            base.block_records.get("*Model_Space").map(|b| b.handle),
-        ];
-        if duena.is_null() || !modelo.contains(&Some(duena)) {
-            return false;
-        }
+    if !reparto.conoce(h) && !es_de_modelo(base, e) {
+        return false;
     }
     let bloque = match e {
         EntityType::Insert(i) => Some(i.block_name.as_str()),
@@ -305,6 +298,97 @@ pub fn admite(base: &CadDocument, reparto: &Reparto, h: Handle, e: Option<&Entit
         _ => None,
     };
     bloque.is_none_or(|b| b.is_empty() || base.block_records.get(b).is_some())
+}
+
+/// Si una entidad es del espacio modelo (la duena es su registro).
+pub fn es_de_modelo(doc: &CadDocument, e: &EntityType) -> bool {
+    let duena = e.common().owner_handle;
+    let modelo = [
+        Some(doc.header.model_space_block_handle),
+        doc.block_records.get("*Model_Space").map(|b| b.handle),
+    ];
+    !duena.is_null() && modelo.contains(&Some(duena))
+}
+
+/// El nombre del bloque cuyo registro tiene el handle `duena`.
+pub fn bloque_de(doc: &CadDocument, duena: Handle) -> Option<String> {
+    if duena.is_null() {
+        return None;
+    }
+    doc.block_records
+        .iter()
+        .find(|b| b.handle == duena)
+        .map(|b| b.name.clone())
+}
+
+/// El bloque que dibuja una entidad (INSERT o cota), si alguno.
+fn bloque_que_usa(e: &EntityType) -> Option<&str> {
+    match e {
+        EntityType::Insert(i) => Some(i.block_name.as_str()),
+        EntityType::Dimension(d) => Some(d.base().block_name.as_str()),
+        _ => None,
+    }
+    .filter(|n| !n.is_empty())
+}
+
+/// **Si queda algo que dibuje alguno de estos bloques** directamente, sin
+/// contar las entidades que se quitan en el mismo cambio (deshacer una cota
+/// quita la cota y las piezas de su bloque a la vez: no hay que redibujar
+/// nada de ese bloque).
+pub fn alguien_usa(
+    reparto: &Reparto,
+    bloques: &HashSet<String>,
+    quitadas: &HashSet<Handle>,
+) -> bool {
+    let nombres: HashSet<String> = bloques.iter().map(|n| n.to_ascii_uppercase()).collect();
+    reparto.cubos.iter().flatten().any(|e| {
+        !quitadas.contains(&e.common().handle)
+            && bloque_que_usa(e).is_some_and(|b| nombres.contains(&b.to_ascii_uppercase()))
+    })
+}
+
+/// **Los cubos que dibujan alguno de estos bloques** (por un INSERT o una
+/// cota del espacio modelo), tambien a traves de otros bloques que los
+/// llevan dentro: los que hay que rehacer si cambio lo de dentro de un
+/// bloque (el `*Dn` de una cota, un bloque redefinido).
+pub fn dependientes(
+    doc: &CadDocument,
+    reparto: &Reparto,
+    bloques: &HashSet<String>,
+) -> BTreeSet<usize> {
+    let mut todos: HashSet<String> = bloques.iter().map(|n| n.to_ascii_uppercase()).collect();
+    // Los que los llevan dentro, hasta que no salga ninguno mas.
+    for _ in 0..8 {
+        let antes = todos.len();
+        for br in doc.block_records.iter() {
+            let nombre = br.name.to_ascii_uppercase();
+            if todos.contains(&nombre)
+                || nombre.starts_with("*MODEL_SPACE")
+                || nombre.starts_with("*PAPER_SPACE")
+            {
+                continue;
+            }
+            if doc
+                .entities_in_block(&br.name)
+                .any(|e| bloque_que_usa(e).is_some_and(|b| todos.contains(&b.to_ascii_uppercase())))
+            {
+                todos.insert(nombre);
+            }
+        }
+        if todos.len() == antes {
+            break;
+        }
+    }
+    reparto
+        .cubos
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            c.iter()
+                .any(|e| bloque_que_usa(e).is_some_and(|b| todos.contains(&b.to_ascii_uppercase())))
+        })
+        .map(|(k, _)| k)
+        .collect()
 }
 
 /// **Los vertices que usan unos indices**, renumerados (los [`CORTE`] se
@@ -487,5 +571,64 @@ mod pruebas {
         assert_eq!(is, vec![0, 1, CORTE, 1, 2, CORTE]);
         let (vs, is) = compactar::<u8>(&[], &[]);
         assert!(vs.is_empty() && is.is_empty());
+    }
+
+    #[test]
+    fn los_cubos_que_dibujan_un_bloque_y_sus_cotas() {
+        use cad_nucleo::{Dibujo, Sesion};
+        let mut s = Sesion::nueva(Dibujo::nuevo());
+        // Un bloque MESA insertado lejos y una cota real en otro sitio.
+        s.escribir("rec");
+        s.escribir("0,0");
+        s.escribir("100,100");
+        s.elegir_todo();
+        s.escribir("b");
+        s.escribir("MESA");
+        s.escribir("0,0");
+        s.escribir("i");
+        s.escribir("MESA");
+        s.escribir("100000,0");
+        s.escribir("");
+        s.escribir("");
+        for (a, b) in [("0,50000", "300,50000"), ("50000,50000", "50300,50000")] {
+            s.escribir("l");
+            s.escribir(a);
+            s.escribir(b);
+            s.escribir("");
+        }
+        s.escribir("dli");
+        s.escribir("0,50000");
+        s.escribir("300,50000");
+        s.escribir("150,49000");
+        let doc = &s.dibujo.doc;
+        let ents: Vec<Arc<EntityType>> = doc
+            .model_space_entities()
+            .filter_map(|e| doc.get_entity_arc(e.common().handle))
+            .collect();
+        let reparto = Reparto::nuevo(ents, 2);
+        assert!(reparto.cubos.len() > 1);
+        let con = |n: &str| -> BTreeSet<usize> {
+            dependientes(doc, &reparto, &[n.to_string()].into_iter().collect())
+        };
+        // Los dos INSERT de MESA (el del bloque y el insertado) en sus cubos.
+        assert!(!con("mesa").is_empty());
+        let dim = doc
+            .model_space_entities()
+            .find_map(|e| match e {
+                EntityType::Dimension(d) => Some(d.base().block_name.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let cubos_cota = con(&dim);
+        assert_eq!(cubos_cota.len(), 1);
+        // Caso negativo: un bloque que nadie usa no toca ningun cubo.
+        assert!(con("NADIE").is_empty());
+        // Las piezas del bloque de la cota no son del espacio modelo.
+        let pieza = doc.entities_in_block(&dim).next().unwrap();
+        assert!(!es_de_modelo(doc, pieza));
+        assert_eq!(
+            bloque_de(doc, pieza.common().owner_handle).as_deref(),
+            Some(dim.as_str())
+        );
     }
 }
