@@ -73,6 +73,34 @@ pub struct Memoria {
     pub seleccion_previa: Vec<Handle>,
     /// Las capas que apago CAPAAISLAR (las enciende CAPADESAISLAR).
     pub capas_aisladas: Vec<String>,
+    /// Lo que una orden le pide a la app (un dialogo de archivos, abrir una
+    /// ventana…): la app los atiende en orden despues de cada evento.
+    pub pedidos: Vec<PedidoApp>,
+}
+
+/// **Lo que una orden le pide a la app** (el nucleo no tiene ventanas).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PedidoApp {
+    /// El dialogo de abrir (`guardar` falso) o de guardar de Windows. La ruta
+    /// elegida se escribe en la linea de ordenes tal cual (la orden tiene que
+    /// estar en [`Herramienta::pide_texto`] al pedirlo); si se cancela, Esc.
+    /// `filtros`: pares de nombre y patrones (`("PDF", "*.pdf")`, varios
+    /// patrones separados por `;`).
+    Archivo {
+        guardar: bool,
+        titulo: String,
+        filtros: Vec<(String, String)>,
+        sugerido: String,
+    },
+    /// Abrir un fichero como desde el inicio (un plano en la mesa, un modelo
+    /// en su ventana 3D).
+    Abrir(std::path::PathBuf),
+    /// Ver en 3D: el dibujo de ahora (`None`) o un fichero.
+    Ver3d(Option<std::path::PathBuf>),
+    /// Abrir el explorador de datos BIM de un modelo (IFC o Revit).
+    ExplorarBim(std::path::PathBuf),
+    /// Un aviso en una ventanita (para lo que no cabe en el historial).
+    Aviso(String),
 }
 
 /// Lo que una herramienta puede cambiar.

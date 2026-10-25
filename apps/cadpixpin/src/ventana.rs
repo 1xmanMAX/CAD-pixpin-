@@ -358,6 +358,7 @@ pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
         }
         while let Some(ev) = COLA.with(|c| sacar_evento(&mut c.borrow_mut())) {
             app.atender(ev);
+            app.atender_pedidos();
             sucio = true;
         }
         if app.recibir() {
@@ -647,6 +648,54 @@ impl App {
             Err(e) => {
                 m.sesion.avisar(format!("No se pudo guardar: {e}"));
                 false
+            }
+        }
+    }
+
+    /// **Lo que las ordenes le pidieron a la app** (ver
+    /// [`cad_nucleo::herramienta::PedidoApp`]), en orden.
+    fn atender_pedidos(&mut self) {
+        use cad_nucleo::herramienta::PedidoApp;
+        loop {
+            let Pantalla::Mesa(m) = &mut self.pantalla else {
+                return;
+            };
+            if m.sesion.memoria.pedidos.is_empty() {
+                return;
+            }
+            let pedido = m.sesion.memoria.pedidos.remove(0);
+            match pedido {
+                PedidoApp::Archivo {
+                    guardar,
+                    titulo,
+                    filtros,
+                    sugerido,
+                } => {
+                    let r = dialogos::elegir(self.hwnd, guardar, &titulo, &filtros, &sugerido);
+                    let Pantalla::Mesa(m) = &mut self.pantalla else {
+                        return;
+                    };
+                    match r {
+                        Some(ruta) => m.sesion.escribir(&ruta.to_string_lossy()),
+                        None => m.sesion.escape(),
+                    }
+                }
+                PedidoApp::Abrir(ruta) => self.abrir_ruta(ruta),
+                PedidoApp::Ver3d(Some(ruta)) => {
+                    bim::abrir(ruta, self.avisos.0.clone());
+                }
+                PedidoApp::Ver3d(None) => {
+                    self.decir("Ver el dibujo en 3D aun no esta listo".into());
+                }
+                PedidoApp::ExplorarBim(ruta) => {
+                    self.decir(format!(
+                        "El explorador BIM aun no esta listo ({})",
+                        ruta.display()
+                    ));
+                }
+                PedidoApp::Aviso(t) => {
+                    pixpin_shell::dialogo::avisar_al_frente("CAD-pixpin", &t);
+                }
             }
         }
     }

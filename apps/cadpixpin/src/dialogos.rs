@@ -107,3 +107,79 @@ fn guardar_con(
         ruta
     }
 }
+
+/// **El dialogo que pide una orden** ([`cad_nucleo::herramienta::PedidoApp::Archivo`]):
+/// abrir o guardar, con sus filtros (`("PDF", "*.pdf")`).
+pub fn elegir(
+    padre: HWND,
+    guardar: bool,
+    titulo: &str,
+    filtros: &[(String, String)],
+    sugerido: &str,
+) -> Option<PathBuf> {
+    // Las cadenas tienen que vivir mientras el dialogo las usa.
+    let nombres: Vec<HSTRING> = filtros
+        .iter()
+        .map(|f| HSTRING::from(f.0.as_str()))
+        .collect();
+    let patrones: Vec<HSTRING> = filtros
+        .iter()
+        .map(|f| HSTRING::from(f.1.as_str()))
+        .collect();
+    let mut specs: Vec<COMDLG_FILTERSPEC> = nombres
+        .iter()
+        .zip(&patrones)
+        .map(|(n, p)| COMDLG_FILTERSPEC {
+            pszName: PCWSTR(n.as_ptr()),
+            pszSpec: PCWSTR(p.as_ptr()),
+        })
+        .collect();
+    if specs.is_empty() {
+        specs.push(COMDLG_FILTERSPEC {
+            pszName: w!("Todos"),
+            pszSpec: w!("*.*"),
+        });
+    }
+    let titulo = HSTRING::from(titulo);
+    // SAFETY: como en `abrir`; las cadenas de arriba viven hasta el final.
+    unsafe {
+        if guardar {
+            let d: IFileSaveDialog =
+                CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            d.SetFileTypes(&specs).ok()?;
+            let _ = d.SetTitle(&titulo);
+            // La extension por defecto: la del primer patron.
+            let ext = filtros
+                .first()
+                .and_then(|f| f.1.split(';').next())
+                .and_then(|p| p.rsplit('.').next())
+                .filter(|e| *e != "*")
+                .map(HSTRING::from);
+            if let Some(ext) = &ext {
+                let _ = d.SetDefaultExtension(ext);
+            }
+            let _ = d.SetFileName(&HSTRING::from(sugerido));
+            let op = d.GetOptions().ok()?;
+            d.SetOptions(op | FOS_OVERWRITEPROMPT).ok()?;
+            d.Show(Some(padre)).ok()?;
+            let item = d.GetResult().ok()?;
+            let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let ruta = p.to_string().ok().map(PathBuf::from);
+            CoTaskMemFree(Some(p.0 as *const _));
+            ruta
+        } else {
+            let d: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            d.SetFileTypes(&specs).ok()?;
+            let _ = d.SetTitle(&titulo);
+            let op = d.GetOptions().ok()?;
+            d.SetOptions(op | FOS_FILEMUSTEXIST).ok()?;
+            d.Show(Some(padre)).ok()?;
+            let item = d.GetResult().ok()?;
+            let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let ruta = p.to_string().ok().map(PathBuf::from);
+            CoTaskMemFree(Some(p.0 as *const _));
+            ruta
+        }
+    }
+}
