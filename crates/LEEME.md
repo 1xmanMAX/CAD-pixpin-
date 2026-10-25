@@ -32,3 +32,9 @@ Lo minimo, y solo anadido (lo de antes funciona igual):
 ## Nuevo en CAD-pixpin
 
 Los crates `cad-*` (ver el README de la raíz).
+
+| Crate | Que es |
+|---|---|
+| `cad-nucleo` | El nucleo de edicion (ver el README de la raiz). Depende de `cad-bim-datos` solo para REVITAPLANTA y EXPLORARBIM. |
+| `cad-bim-datos` | Los datos de un modelo BIM, de Revit (`rvt-rs`) o de IFC (`ifc-lite-core`): fichero, proyecto, niveles, elementos con todas sus propiedades por conjunto, materiales, espacios y tipos; tablas y exportaciones (CSV, JSON, Excel con `rust_xlsxwriter`; de un Revit, IFC4, GLB y su planta). Rust puro, se prueba en Linux. No depende de ningun `cad-*` (sin ciclos). Dependencias nuevas: `rust_xlsxwriter` y `png` (MIT/Apache); `roxmltree`, `rvt` e `ifc-lite-*` ya estaban por `pixpin-bim`. |
+

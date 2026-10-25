@@ -21,6 +21,9 @@ flate2 = "1.1"
 # Leer los SVG que se importan (`formatos::svg`). Ya estaba en el arbol
 # (pixpin-bim). MIT o Apache-2.0, sin dependencias.
 roxmltree = "0.20"
+# Los datos de los modelos BIM (Revit con rvt-rs, IFC con ifc-lite) para
+# REVITAPLANTA y EXPLORARBIM. No depende de este crate (sin ciclos).
+cad-bim-datos = { path = "../cad-bim-datos" }
 
 [dev-dependencies]
 # Las pruebas de EXPORTAR3D vuelven a leer el IFC escrito con el mismo lector

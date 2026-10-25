@@ -165,6 +165,18 @@ Lo que en un CAD genérico son diez pasos:
 - Coordenadas con los decimales que distinguen un píxel a la escala de la vista.
 - Los modelos BIM se abren en la **ventana 3D de PixPin** (órbita, caja de sección, niveles,
   medidas de cada pieza).
+- **Explorador de datos BIM** («Explorar datos» en la tarjeta del BIM del inicio, o la orden
+  EXPLORARBIM `EB` de la pestaña Medir): una ventana con el fichero y el proyecto (y la
+  miniatura de Revit), el árbol Proyecto ▸ Edificio ▸ Nivel ▸ Categoría ▸ Elemento con
+  cuántos hay, las propiedades del elemento por conjunto (Psets y Qtos con su unidad, capas,
+  clasificación, tipo; de Revit, ElementId, GlobalId, familia y tipo y lo que lee `rvt-rs`),
+  la tabla de planificación de un nivel o una categoría (columnas que se ordenan), una
+  búsqueda por nombre, categoría o valor, y exportar a CSV (todo o uno por categoría), JSON,
+  Excel (una hoja por categoría) y, de un Revit, a IFC4 y GLB; «Ver en 3D» abre el visor.
+  Lee en otro hilo y solo pinta las filas que se ven. Los datos los da el crate
+  `cad-bim-datos` (Rust puro, probado en Linux).
+- **REVITAPLANTA** (`RVTPLANTA`): elige un `.rvt` y un nivel y dibuja su planta (el contorno
+  de cada elemento, con sus huecos) en el plano, en capas `BIM-Muros`, `BIM-Puertas`…
 
 #### Teclado y ratón
 
@@ -226,6 +238,8 @@ Rust 1.97.1 (fijado en `rust-toolchain.toml`), Windows 10 21H2 u 11.
 cargo run -p cadpixpin --release            # la app
 cargo run -p cadpixpin --release -- plano.dwg
 cargo test -p cad-nucleo                     # el núcleo, en cualquier sistema
+cargo test -p cad-bim-datos                  # los datos de Revit e IFC, en cualquier sistema
+cargo run -p cad-bim-datos --release --example resumen -- modelo.rvt
 cargo test --workspace -- --test-threads=1   # todo, en Windows
 ```
 
@@ -247,7 +261,9 @@ Ver [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 - Portar desde `referencia/` el anotado con el motor del lienzo, imprimir láminas y
   exportar a PDF.
-- Propiedades BIM: leer y editar los `Pset` de cada elemento del IFC.
+- Propiedades BIM: editar los `Pset` de cada elemento del IFC (leerlos ya se puede, en el
+  explorador). Más parámetros de Revit cuando `rvt-rs` los decodifique (hoy, la mayoría de
+  los de ejemplar no; los elementos de Revit 2022 o anterior, tampoco).
 
 ## Licencia
 

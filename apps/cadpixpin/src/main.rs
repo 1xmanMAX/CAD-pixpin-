@@ -22,6 +22,8 @@ mod documentos;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod encima;
 #[cfg(windows)]
+mod explorador_bim;
+#[cfg(windows)]
 mod imagenes;
 #[cfg(windows)]
 mod inicio;

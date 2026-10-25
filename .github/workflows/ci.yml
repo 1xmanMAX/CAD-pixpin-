@@ -31,9 +31,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy -p cad-nucleo --all-targets -- -D warnings
+        run: cargo clippy -p cad-nucleo -p cad-bim-datos --all-targets -- -D warnings
       - name: Pruebas
-        run: cargo test -p cad-nucleo
+        run: cargo test -p cad-nucleo -p cad-bim-datos
 
   windows:
     runs-on: windows-latest

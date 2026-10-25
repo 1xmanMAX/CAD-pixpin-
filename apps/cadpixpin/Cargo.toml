@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 cad-nucleo = { path = "../../crates/cad-nucleo" }
+# Los datos de los modelos BIM para el explorador (Rust puro).
+cad-bim-datos = { path = "../../crates/cad-bim-datos" }
 tracing = "0.1"
 
 # La ventana es de Windows; fuera de alli el ejecutable solo lo dice (y las
@@ -30,6 +32,7 @@ pixpin-shell = { workspace = true }
 tracing-subscriber = "0.3"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",

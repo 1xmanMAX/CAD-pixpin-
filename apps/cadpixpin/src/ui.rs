@@ -20,6 +20,8 @@ pub enum Accion {
     AbrirReciente(PathBuf),
     /// El metrado de un modelo BIM (sin abrirlo), a CSV.
     MetradoBim,
+    /// Elegir un modelo BIM y abrir su explorador de datos.
+    ExplorarBim,
     /// Abrir la copia del autoguardado (su ruta) en vez del original.
     Recuperar(PathBuf),
     /// Borrar una copia del autoguardado que no se quiere.
