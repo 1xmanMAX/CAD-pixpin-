@@ -20,6 +20,10 @@ pub enum Accion {
     AbrirReciente(PathBuf),
     /// El metrado de un modelo BIM (sin abrirlo), a CSV.
     MetradoBim,
+    /// Abrir la copia del autoguardado (su ruta) en vez del original.
+    Recuperar(PathBuf),
+    /// Borrar una copia del autoguardado que no se quiere.
+    DescartarCopia(PathBuf),
     // Mesa
     Inicio,
     Guardar,

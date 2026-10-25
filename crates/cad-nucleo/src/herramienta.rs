@@ -62,11 +62,25 @@ impl Lectura<'_> {
     }
 }
 
+/// **Lo que la sesion recuerda para las ordenes enchufables** de una a otra
+/// (y lo que estas le piden a la ventana).
+#[derive(Debug, Clone, Default)]
+pub struct Memoria {
+    /// Lo que se pide a la ventana (ver todo, una ventana de zoom…): la app lo
+    /// toma con `Option::take` en cada vuelta.
+    pub vista: Option<crate::herramientas::vista::PedidoVista>,
+    /// Lo elegido para la ultima orden con objetos (SELECCIONPREVIA).
+    pub seleccion_previa: Vec<Handle>,
+    /// Las capas que apago CAPAAISLAR (las enciende CAPADESAISLAR).
+    pub capas_aisladas: Vec<String>,
+}
+
 /// Lo que una herramienta puede cambiar.
 pub struct Contexto<'a> {
     pub dibujo: &'a mut Dibujo,
     pub seleccion: &'a mut Vec<Handle>,
     pub ajustes: &'a mut Ajustes,
+    pub memoria: &'a mut Memoria,
     pub(crate) registro: &'a mut Vec<String>,
 }
 
@@ -138,6 +152,12 @@ pub trait Herramienta {
     /// Si lo escrito va tal cual a [`Herramienta::texto`] (un texto con espacios).
     fn pide_texto(&self) -> bool {
         false
+    }
+
+    /// Nada mas empezar (para las que hacen lo suyo de una vez, como ZE o
+    /// CAPAON): `Termina` la cierra sin pedir nada.
+    fn al_empezar(&mut self, _cx: &mut Contexto) -> Flujo {
+        Flujo::Sigue
     }
 
     /// Si la orden [`Orden::con_objetos`] ya tiene los suyos (elegidos antes

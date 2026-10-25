@@ -103,6 +103,39 @@ Lo que en un CAD genérico son diez pasos:
 | `Ctrl+S`, `Ctrl+Mayús+S`, `Ctrl+O`, `Ctrl+N` | Guardar, guardar como, abrir, nuevo |
 | `Ctrl+A` | Elegir todo |
 
+#### Atajos
+
+Para trabajar a gusto en planos grandes:
+
+| Tecla u orden (alias) | Qué hace |
+|---|---|
+| ZOOM (`Z`) | Opciones `Extension` (`E`, o Enter), `Ventana` (`V`, o un clic directo: dos esquinas con su recuadro), `Previo` (`P`, las 20 últimas vistas), `Todo` (`T`, con los límites del dibujo) o un factor (`2`, `0.5`, `2x`) |
+| ZOOMEXTENSION (`ZE`) | Ver todo lo dibujado, sin preguntar |
+| `Ctrl+C`, `Ctrl+X` | Copiar / cortar lo elegido al portapapeles (COPIARPORTAPAPELES `COPYCLIP`, CORTARPORTAPAPELES `CUTCLIP`); la base es la esquina inferior izquierda |
+| `Ctrl+Mayús+C` | Copiar con un punto base (COPIABASE, `COPYBASE`) |
+| `Ctrl+V` | Pegar donde se haga clic, viendo dónde cae (PEGARPORTAPAPELES, `PEGAR`, `PASTECLIP`). Vale entre planos abiertos uno tras otro: las capas que falten se crean |
+| CAPA (`CA`, `LAYER`) | Hacer actual una capa escribiendo su nombre, `Nueva` (`N`) para crearla o `Actual` (`A`). El **+** del panel de capas empieza una nueva |
+| CAPAAISLAR (`LAYISO`) / CAPADESAISLAR (`LAYUNISO`) | Apagar todo menos las capas de lo elegido / volver a encenderlo |
+| CAPAOFF (`LAYOFF`) / CAPAON (`LAYON`) | Apagar las capas de lo elegido (la actual no) / encender todas |
+| CAPAACT (`LAYMCUR`) | La capa de un objeto pasa a ser la actual |
+| CAPABLOQ (`LAYLCK`) / CAPADESBLOQ (`LAYULK`) | Bloquear las capas de lo elegido / desbloquear con un clic en lo bloqueado (o su nombre) |
+| SELECCIONARSIMILAR (`SS`, `SELECTSIMILAR`) | Elegir todo lo del mismo tipo y capa que lo elegido |
+| SELECCIONPREVIA (`SP`, `SELECTPREVIOUS`) | Volver a elegir lo de la última orden |
+| SELECCIONARCAPA (`SLC`, `SELECTLAYER`) | Elegir todo lo de una capa: un clic en un objeto, su nombre o Enter para la actual |
+| INVERTIRSELECCION (`INV`, `SELECTINVERSE`) | Elegir lo que no está elegido |
+| `Ctrl+Mayús+Z` | Rehacer (como `Ctrl+Y`) |
+| `F2` | Historial de la línea de órdenes alto (12 líneas) o bajo |
+| `F7` | Pintar la rejilla (el paso de `F9`, o uno redondo a la escala de la vista) |
+| `F11` | Pantalla completa |
+| Rueda sobre las capas | Mover la lista; a la derecha de cada capa, cuántos objetos tiene |
+| Doble clic en un texto | Editarlo (EDITARTEXTO, si está) |
+
+**Autoguardado**: cada 5 minutos, si hay cambios sin guardar, una copia en DXF en
+`%APPDATA%\CAD-pixpin\autoguardado\` (en otro hilo; la variable `CADPIXPIN_AUTOGUARDADO`
+cambia los minutos y `0` lo apaga). Al guardar, o al cerrar sin guardar, la copia se borra.
+Si la app se cerró de golpe, el inicio ofrece **Recuperar** o **Descartar** cada copia más
+nueva que su plano.
+
 ## Compilar y probar
 
 Rust 1.97.1 (fijado en `rust-toolchain.toml`), Windows 10 21H2 u 11.
