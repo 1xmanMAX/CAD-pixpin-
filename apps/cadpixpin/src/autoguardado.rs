@@ -284,7 +284,7 @@ mod pruebas {
         // Windows no distingue mayusculas: el mismo archivo, la misma copia.
         assert_eq!(a.rsplit('-').next(), a2.rsplit('-').next());
         assert_eq!(nombre_para(None, 0xAB), "SinNombre-00000000000000ab.dxf");
-        assert!(nombre_para(Some(Path::new("a:b?.dxf")), 0).starts_with("a_b_-"));
+        assert!(nombre_para(Some(Path::new("a#b?.dxf")), 0).starts_with("a_b_-"));
     }
 
     #[test]
