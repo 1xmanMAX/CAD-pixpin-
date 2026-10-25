@@ -453,7 +453,7 @@ impl Mesa {
 
     pub fn enter(&mut self) {
         self.emergente = None;
-        let t = self.linea.tomar();
+        let t = self.linea.tomar(self.sesion.activa().is_none());
         self.sesion.escribir(&t);
     }
 
@@ -483,10 +483,11 @@ impl Mesa {
 
     /// Flecha arriba o abajo: el historial de lo escrito.
     pub fn historial(&mut self, arriba: bool) {
+        let solo_ordenes = self.sesion.activa().is_none();
         if arriba {
-            self.linea.subir();
+            self.linea.subir(solo_ordenes);
         } else {
-            self.linea.bajar();
+            self.linea.bajar(solo_ordenes);
         }
     }
 
@@ -1132,7 +1133,13 @@ impl Mesa {
         // La mitad de arriba para las capas.
         let limite = r.y + r.alto * 0.5;
         let capas: Vec<_> = dib.doc.layers.iter().collect();
-        let caben = (((limite - y) / alto_fila).floor().max(1.0)) as usize;
+        // Si no caben todas, sitio abajo para decir cuantas hay.
+        let pie = if capas.len() as f32 * alto_fila > limite - y {
+            18.0 * e
+        } else {
+            0.0
+        };
+        let caben = (((limite - y - pie) / alto_fila).floor().max(1.0)) as usize;
         self.capas_caben.set(caben);
         let desde = self.capas_desde.min(capas.len().saturating_sub(caben));
         let y_lista = y;
@@ -1870,7 +1877,7 @@ impl Mesa {
                 .collect();
             if !s.is_empty() {
                 p.texto(
-                    &format!("→ {}    Tab completa", s.join("   ")),
+                    &format!("» {}    Tab completa", s.join("   ")),
                     xc + 18.0 * e,
                     ty + 1.0 * e,
                     11.5 * e,

@@ -293,3 +293,49 @@ fn rendimiento_mover_borrar_y_deshacer_todo() {
         assert!(borrar < 3000.0, "borrar: {borrar} ms");
     }
 }
+
+#[test]
+#[ignore]
+fn rendimiento_copiar_girar_capa_y_portapapeles_de_todo() {
+    let (d, hs) = plano();
+    let mut s = Sesion::nueva(d);
+    let mut tiempos = Vec::new();
+    let mut medir_orden = |s: &mut Sesion, nombre: &str, f: &dyn Fn(&mut Sesion)| {
+        s.escape();
+        s.escape();
+        s.elegir_todo();
+        let t = Instant::now();
+        f(s);
+        let _ = s.dibujo.indice();
+        tiempos.push((nombre.to_string(), ms(t.elapsed())));
+    };
+    medir_orden(&mut s, "girar", &|s| {
+        s.escribir("gi");
+        s.escribir("0,0");
+        s.escribir("10");
+    });
+    medir_orden(&mut s, "capa", &|s| s.poner_capa("OTRA"));
+    medir_orden(&mut s, "copiar al portapapeles", &|s| {
+        s.escribir("copyclip")
+    });
+    medir_orden(&mut s, "pegar", &|s| {
+        s.escribir("pegar");
+        s.escribir("100000,0");
+    });
+    medir_orden(&mut s, "copiar", &|s| {
+        s.escribir("co");
+        s.escribir("0,0");
+        s.escribir("0,100000");
+        s.escribir("");
+    });
+    let total = s.dibujo.doc.model_space_entities().count();
+    for (n, t) in &tiempos {
+        println!("{n} de {} objetos: {t:.0} ms", hs.len());
+    }
+    assert_eq!(total, hs.len() * 4);
+    if optimizado() {
+        for (n, t) in &tiempos {
+            assert!(*t < 5000.0, "{n}: {t} ms");
+        }
+    }
+}

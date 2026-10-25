@@ -13,8 +13,9 @@ const HISTORIAL: usize = 100;
 pub struct Linea {
     /// Lo escrito hasta ahora.
     pub escrito: String,
-    /// Lo que se escribio antes (lo mas reciente al final).
-    historial: Vec<String>,
+    /// Lo que se escribio antes (lo mas reciente al final), y si era una
+    /// orden (escrita sin orden en marcha) o una respuesta a una.
+    historial: Vec<(String, bool)>,
     /// Recorriendo el historial: en que entrada, y lo que habia escrito antes.
     paseo: Option<(usize, String)>,
     /// Completando con Tab: lo que se escribio y el candidato de ahora.
@@ -47,13 +48,14 @@ impl Linea {
     }
 
     /// **Enter**: da lo escrito y lo apunta en el historial (sin repetir
-    /// lo ultimo ni apuntar lo vacio).
-    pub fn tomar(&mut self) -> String {
+    /// lo ultimo ni apuntar lo vacio). `es_orden`: se escribio sin orden en
+    /// marcha.
+    pub fn tomar(&mut self, es_orden: bool) -> String {
         self.soltar();
         let t = std::mem::take(&mut self.escrito);
         let limpio = t.trim();
-        if !limpio.is_empty() && self.historial.last().map(String::as_str) != Some(limpio) {
-            self.historial.push(limpio.to_string());
+        if !limpio.is_empty() && self.historial.last().map(|(h, _)| h.as_str()) != Some(limpio) {
+            self.historial.push((limpio.to_string(), es_orden));
             if self.historial.len() > HISTORIAL {
                 self.historial.remove(0);
             }
@@ -61,37 +63,40 @@ impl Linea {
         t
     }
 
-    /// **Flecha arriba**: lo escrito antes (cada vez, uno mas viejo).
-    pub fn subir(&mut self) {
-        if self.historial.is_empty() {
-            return;
-        }
+    /// **Flecha arriba**: lo escrito antes (cada vez, uno mas viejo). Con
+    /// `solo_ordenes` (en «Orden:»), solo las ordenes, como en AutoCAD.
+    pub fn subir(&mut self, solo_ordenes: bool) {
         self.tab = None;
-        let i = match &self.paseo {
-            None => {
-                self.paseo = Some((self.historial.len(), self.escrito.clone()));
-                self.historial.len() - 1
-            }
-            Some((i, _)) => i.saturating_sub(1),
+        let desde = self
+            .paseo
+            .as_ref()
+            .map_or(self.historial.len(), |(i, _)| *i);
+        let Some(i) = (0..desde)
+            .rev()
+            .find(|k| !solo_ordenes || self.historial[*k].1)
+        else {
+            return;
         };
-        if let Some((k, _)) = &mut self.paseo {
-            *k = i;
+        match &mut self.paseo {
+            Some((k, _)) => *k = i,
+            None => self.paseo = Some((i, self.escrito.clone())),
         }
-        self.escrito = self.historial[i].clone();
+        self.escrito = self.historial[i].0.clone();
     }
 
     /// **Flecha abajo**: lo escrito despues; al pasar del ultimo, lo que
     /// habia antes de subir.
-    pub fn bajar(&mut self) {
+    pub fn bajar(&mut self, solo_ordenes: bool) {
         let Some((i, borrador)) = self.paseo.take() else {
             return;
         };
         self.tab = None;
-        if i + 1 < self.historial.len() {
-            self.escrito = self.historial[i + 1].clone();
-            self.paseo = Some((i + 1, borrador));
-        } else {
-            self.escrito = borrador;
+        match (i + 1..self.historial.len()).find(|k| !solo_ordenes || self.historial[*k].1) {
+            Some(j) => {
+                self.escrito = self.historial[j].0.clone();
+                self.paseo = Some((j, borrador));
+            }
+            None => self.escrito = borrador,
         }
     }
 
@@ -169,32 +174,45 @@ mod pruebas {
     #[test]
     fn el_historial_sube_baja_y_vuelve_a_lo_escrito() {
         let mut l = Linea::default();
-        for t in ["l", "0,0", "0,0", "", "co"] {
+        for (t, orden) in [
+            ("l", true),
+            ("0,0", false),
+            ("0,0", false),
+            ("", false),
+            ("co", true),
+        ] {
             escribir(&mut l, t);
-            l.tomar();
+            l.tomar(orden);
         }
         escribir(&mut l, "zo");
-        l.subir();
+        l.subir(false);
         assert_eq!(l.escrito, "co");
-        l.subir();
+        l.subir(false);
         assert_eq!(l.escrito, "0,0");
-        l.subir();
+        l.subir(false);
         assert_eq!(l.escrito, "l");
         // Del mas viejo no se pasa.
-        l.subir();
+        l.subir(false);
         assert_eq!(l.escrito, "l");
-        l.bajar();
-        l.bajar();
+        l.bajar(false);
+        l.bajar(false);
         assert_eq!(l.escrito, "co");
         // Y al bajar del ultimo, lo que se estaba escribiendo.
-        l.bajar();
+        l.bajar(false);
         assert_eq!(l.escrito, "zo");
-        l.bajar();
+        l.bajar(false);
         assert_eq!(l.escrito, "zo");
         // Escribir suelta el paseo: subir empieza de nuevo por el ultimo.
-        l.subir();
+        l.subir(false);
         l.poner('x');
-        l.subir();
+        l.subir(false);
+        assert_eq!(l.escrito, "co");
+        // En «Orden:», solo las ordenes (se salta el punto).
+        l.limpiar();
+        l.subir(true);
+        l.subir(true);
+        assert_eq!(l.escrito, "l");
+        l.bajar(true);
         assert_eq!(l.escrito, "co");
     }
 
@@ -202,9 +220,13 @@ mod pruebas {
     fn sin_historial_las_flechas_no_hacen_nada() {
         let mut l = Linea::default();
         escribir(&mut l, "ab");
-        l.subir();
-        l.bajar();
+        l.subir(false);
+        l.bajar(false);
         assert_eq!(l.escrito, "ab");
+        // Con solo respuestas, en «Orden:» no hay nada que recordar.
+        l.tomar(false);
+        l.subir(true);
+        assert_eq!(l.escrito, "");
     }
 
     #[test]

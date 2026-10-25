@@ -343,6 +343,7 @@ struct App {
 /// **Arranca la app** y no vuelve hasta cerrarla.
 pub fn correr(abrir: Option<PathBuf>) -> Result<(), String> {
     let hwnd = crear_ventana().map_err(|e| e.to_string())?;
+    recuperar_foco(hwnd);
     let (w, h) = tamano_cliente(hwnd);
     let gpu = Gpu::nueva(hwnd, w, h).map_err(|e| format!("sin Direct3D: {e}"))?;
     let motor = MotorRender::nuevo(&gpu.dispositivo).ok();
@@ -454,6 +455,8 @@ impl App {
                     d.tocar();
                     let mut m = Mesa::nueva(d);
                     m.autoguardado = autoguardado::Estado::recuperado(a.ruta.clone());
+                    // No es un plano nuevo: sin el saludo de uno.
+                    m.sesion.registro.clear();
                     m.sesion.avisar(
                         "Recuperado del autoguardado: guarde (Ctrl+S) para quedarse con esta version",
                     );
@@ -591,6 +594,15 @@ impl App {
                 // Los Ctrl+letra llegan como caracteres de control y la mesa
                 // los ignora; no se mira Ctrl aqui, porque AltGr (la @ del
                 // teclado espanol) tambien lo enciende.
+                // En el inicio, escribir una orden empieza un plano nuevo con
+                // ella (lo que promete el pie del inicio).
+                if matches!(self.pantalla, Pantalla::Inicio)
+                    && self.abriendo.is_none()
+                    && !c.is_control()
+                    && !c.is_whitespace()
+                {
+                    self.accion(Accion::PlanoNuevo);
+                }
                 if let Pantalla::Mesa(m) = &mut self.pantalla {
                     m.caracter(c);
                 }
