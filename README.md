@@ -69,10 +69,17 @@ Cada orden nueva vive en su módulo de `crates/cad-nucleo/src/herramientas/` (el
   tina, lavadero, cocina, refrigeradora, camas, mesa con sillas, sofá, escritorio, puerta,
   tomacorriente, interruptor, luminaria, sumidero, registro y columna 30×30.
 - **SOMBREADO** con un clic dentro: busca el contorno cerrado más pequeño alrededor (también
-  entre líneas sueltas que se cruzan, con islas), con SÓLIDO, ANSI31, ANSI37 y ARENA.
+  entre líneas sueltas que se cruzan, con islas), con SÓLIDO, ANSI31, ANSI37 y ARENA. Cierra
+  los huecos pequeños entre extremos (opción `T`; por defecto una diezmilésima del dibujo) y
+  queda **asociativo**: sigue a sus bordes al moverlos o estirarlos.
 - **Cotas de verdad** (entidades `DIMENSION` con su bloque, como las de AutoCAD): lineal,
   alineada, continua, línea base, radio, diámetro y angular, con marcas de arquitectura y un
-  estilo `PIXPIN` a la escala del dibujo.
+  estilo `PIXPIN` a la escala del dibujo (y sus hijos `PIXPIN$2`/`$3`/`$4` con flechas para
+  ángulos, diámetros y radios). Son **asociativas** (como DIMASSOC=2): siguen a lo medido al
+  moverlo, estirarlo, girarlo o con un pinzamiento, en el mismo paso de deshacer; se guarda
+  en su XDATA y vale tras abrir el DWG o DXF.
+- Deshacer BLOQUE, INSERTAR una pieza nueva o una cota quita también su definición (no
+  quedan bloques huérfanos).
 
 #### Varios planos juntos
 
@@ -94,7 +101,10 @@ Cada orden nueva vive en su módulo de `crates/cad-nucleo/src/herramientas/` (el
 Pensado para 200 000 a 500 000 objetos en un Core i3 de 3.ª generación:
 
 - El **índice espacial** se pone al día solo con lo que cambió (`Dibujo::cambios_desde`):
-  mover una línea en un plano de 220 000 objetos pasa de 75 ms a 0,1 ms.
+  mover una línea en un plano de 220 000 objetos pasa de 75 ms a 0,1 ms. Apagar, inutilizar
+  o bloquear una capa solo pone al día lo de esa capa (en el índice y en la tarjeta), sin
+  rehacerlo todo: con 55 000 objetos en la capa, unos 17 ms apagarla y 6 ms bloquearla
+  frente a 100 ms del índice entero.
 - Enganches, clic, ventana y captura miran solo las celdas cercanas (de microsegundos a
   1–2 ms con todo el plano en el recuadro); la vista previa de mover o girar todo lo elegido
   transforma las formas del índice (de 157 ms a unos 3 ms).
@@ -220,9 +230,6 @@ Ver [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 ## Lo que sigue
 
-- Cotas asociativas (que sigan a lo medido al moverlo) y estilos hijos para radios y ángulos.
-- Sombreados asociativos y cerrar huecos pequeños del contorno.
-- Que apagar o bloquear una capa no rehaga todo el índice.
 - Portar desde `referencia/` el anotado con el motor del lienzo, imprimir láminas y
   exportar a PDF.
 - Propiedades BIM: leer y editar los `Pset` de cada elemento del IFC.

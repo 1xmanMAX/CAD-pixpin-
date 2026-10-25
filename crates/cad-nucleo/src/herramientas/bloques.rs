@@ -2,6 +2,8 @@
 //! ponerlo (o uno de la biblioteca) en su punto, a su escala y con su giro,
 //! y ver las piezas que trae la biblioteca.
 
+use opencadcodec::Handle;
+
 use crate::biblioteca::{self, Pieza};
 use crate::bloque;
 use crate::especialidad as esp;
@@ -69,26 +71,34 @@ impl Bloque {
             return Flujo::Termina;
         }
         let entidades = elegidas.iter().map(|(_, e)| e.clone()).collect();
-        if let Err(e) = bloque::definir(&mut cx.dibujo.doc, &nombre, entidades, base) {
-            cx.decir(e);
-            return Flujo::Termina;
-        }
-        cx.dibujo.tocar();
         let n = elegidas.len();
-        if self.conservar {
+        let capa = cx.dibujo.capa_actual();
+        let conservar = self.conservar;
+        // Todo en un paso: deshacer quita tambien la definicion.
+        let r: Result<Option<Handle>, String> = cx.dibujo.editar("BLOQUE", |t| {
+            bloque::definir_en(t, &nombre, entidades, base)?;
+            if conservar {
+                return Ok(None);
+            }
+            for (h, _) in &elegidas {
+                t.quitar(*h);
+            }
+            Ok(t.anadir_en(bloque::insercion(&nombre, base, 1.0, 0.0), &capa))
+        });
+        let h = match r {
+            Ok(h) => h,
+            Err(e) => {
+                cx.decir(e);
+                return Flujo::Termina;
+            }
+        };
+        if conservar {
             cx.seleccion.clear();
             cx.decir(format!(
                 "Bloque «{nombre}» definido con {n} objetos (los originales se quedan)"
             ));
             return Flujo::Termina;
         }
-        let capa = cx.dibujo.capa_actual();
-        let h = cx.dibujo.editar("BLOQUE", |t| {
-            for (h, _) in &elegidas {
-                t.quitar(*h);
-            }
-            t.anadir_en(bloque::insercion(&nombre, base, 1.0, 0.0), &capa)
-        });
         *cx.seleccion = h.into_iter().collect();
         cx.decir(format!("Bloque «{nombre}» con {n} objetos"));
         Flujo::Termina
@@ -236,16 +246,32 @@ impl Insertar {
     }
 
     fn poner(&mut self, cx: &mut Contexto, giro: f64) -> Flujo {
-        if let Some(p) = self.pendiente.take() {
-            if let Err(e) = bloque::definir(&mut cx.dibujo.doc, p.nombre, (p.dibujo)(), [0.0, 0.0])
-            {
-                cx.decir(e);
-                return Flujo::Termina;
-            }
-            cx.dibujo.tocar();
-        }
         let e = bloque::insercion(&self.nombre, self.punto, self.escala, giro);
-        let hs = cx.crear("INSERTAR", vec![e], self.capa);
+        let hs = match self.pendiente.take() {
+            // La pieza de la biblioteca se define en el mismo paso que se
+            // inserta (deshacer quita las dos cosas).
+            Some(p) => {
+                let capa = match self.capa {
+                    Some(c) => {
+                        cx.dibujo.asegurar_capa(c, esp::color_de_capa(c));
+                        c.to_string()
+                    }
+                    None => cx.dibujo.capa_actual(),
+                };
+                let r = cx.dibujo.editar("INSERTAR", |t| {
+                    bloque::definir_en(t, p.nombre, (p.dibujo)(), [0.0, 0.0])?;
+                    Ok::<_, String>(t.anadir_en(e, &capa))
+                });
+                match r {
+                    Ok(h) => h.into_iter().collect(),
+                    Err(e) => {
+                        cx.decir(e);
+                        return Flujo::Termina;
+                    }
+                }
+            }
+            None => cx.crear("INSERTAR", vec![e], self.capa),
+        };
         *cx.seleccion = hs;
         cx.decir(format!("Bloque «{}» insertado", self.nombre));
         Flujo::Termina
@@ -428,10 +454,71 @@ mod pruebas {
         assert!(def.iter().any(|e| matches!(e,
             EntityType::Circle(c) if (c.center.x, c.center.y) == (100.0, 50.0))));
         assert_eq!(s.seleccion.len(), 1);
-        // Deshacer devuelve los originales (la definicion se queda).
+        // Deshacer devuelve los originales y quita la definicion.
         s.escribir("u");
         assert_eq!(cuantas(&s), 2);
         assert!(inserts(&s).is_empty());
+        assert!(
+            !s.dibujo.doc.block_records.contains("Mesa"),
+            "sin bloque huerfano"
+        );
+        assert_eq!(s.dibujo.doc.entities_in_block("Mesa").count(), 0);
+        // Rehacer la devuelve con lo suyo.
+        s.escribir("redo");
+        assert_eq!(cuantas(&s), 1);
+        assert_eq!(s.dibujo.doc.entities_in_block("Mesa").count(), 2);
+        // Y el nombre se puede volver a usar tras deshacer.
+        s.escribir("u");
+        s.elegir_todo();
+        s.escribir("b");
+        s.escribir("Mesa");
+        s.escribir("0,0");
+        assert_eq!(inserts(&s).len(), 1);
+    }
+
+    #[test]
+    fn deshacer_insertar_de_la_biblioteca_quita_la_pieza_nueva() {
+        let mut s = Sesion::nueva(Dibujo::nuevo());
+        s.escribir("i");
+        s.escribir("Inodoro");
+        s.escribir("0,0");
+        s.escribir("");
+        s.escribir("");
+        assert!(s.dibujo.doc.block_records.contains("INODORO"));
+        s.escribir("u");
+        assert!(inserts(&s).is_empty());
+        assert!(!s.dibujo.doc.block_records.contains("INODORO"));
+        s.escribir("redo");
+        assert_eq!(inserts(&s).len(), 1);
+        assert!(s.dibujo.doc.entities_in_block("INODORO").count() > 0);
+        // Caso negativo: insertar uno que ya esta no lo vuelve a definir, y
+        // deshacerlo deja la definicion.
+        s.escribir("i");
+        s.escribir("Inodoro");
+        s.escribir("1000,0");
+        s.escribir("");
+        s.escribir("");
+        s.escribir("u");
+        assert_eq!(inserts(&s).len(), 1);
+        assert!(s.dibujo.doc.block_records.contains("INODORO"));
+    }
+
+    #[test]
+    fn bloque_conservando_tambien_se_deshace() {
+        let mut s = con_bloque();
+        s.escribir("l");
+        s.escribir("0,0");
+        s.escribir("10,0");
+        s.escribir("");
+        s.elegir_todo();
+        s.escribir("b");
+        s.escribir("Otro");
+        s.escribir("c");
+        s.escribir("0,0");
+        assert!(s.dibujo.doc.block_records.contains("Otro"));
+        s.escribir("u");
+        assert!(!s.dibujo.doc.block_records.contains("Otro"));
+        assert_eq!(cuantas(&s), 2);
     }
 
     #[test]

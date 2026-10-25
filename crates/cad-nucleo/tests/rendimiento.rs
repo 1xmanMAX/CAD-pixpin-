@@ -153,6 +153,147 @@ fn rendimiento_indice_completo_e_incremental() {
     }
 }
 
+/// Las capas en que se reparte el plano de [`rendimiento_capas`].
+const CAPAS: [&str; 4] = ["A-MUROS", "E-ESTRUCTURAS", "A-MOBILIARIO", "0"];
+
+#[test]
+#[ignore]
+fn rendimiento_capas() {
+    let (mut d, hs) = plano();
+    // Repartidas en cuatro capas.
+    d.editar("CAPAS", |t| {
+        for (k, h) in hs.iter().enumerate() {
+            let c = CAPAS[k % CAPAS.len()];
+            t.cambiar(*h, |e| e.common_mut().layer = c.into());
+        }
+    });
+    let n = d.indice().len();
+    assert_eq!(n, hs.len());
+    let completo = medir(3, |_| {
+        let _ = Indice::completo(&d.doc);
+    });
+    println!("indice rehecho entero ({n} entradas): {completo:.1} ms");
+    let enteros = d.indices_completos();
+    // La primera vez se hace la lista de cada capa.
+    let t = Instant::now();
+    d.con_capa(CAPAS[0], |l| l.lock());
+    let _ = d.indice();
+    let primera = ms(t.elapsed());
+    println!("primer cambio de capa (con la lista por capa): {primera:.1} ms");
+    let bloquear = medir(10, |i| {
+        d.con_capa(CAPAS[1], |l| if i % 2 == 0 { l.lock() } else { l.unlock() });
+        let _ = d.indice();
+    });
+    println!(
+        "bloquear/desbloquear una capa ({} entidades) + indice: {bloquear:.2} ms",
+        hs.len() / 4
+    );
+    let apagar = medir(10, |_| {
+        d.con_capa(CAPAS[2], |l| l.turn_off());
+        let _ = d.indice();
+        d.con_capa(CAPAS[2], |l| l.turn_on());
+        let _ = d.indice();
+    }) / 2.0;
+    println!("apagar o encender una capa + indice: {apagar:.2} ms");
+    let helar = medir(10, |_| {
+        d.con_capa(CAPAS[3], |l| l.freeze());
+        let _ = d.indice();
+        d.con_capa(CAPAS[3], |l| l.thaw());
+        let _ = d.indice();
+    }) / 2.0;
+    println!("inutilizar o reutilizar una capa + indice: {helar:.2} ms");
+    let actual = medir(10, |i| {
+        d.poner_capa_actual(CAPAS[i % CAPAS.len()]);
+        let _ = d.indice();
+    });
+    println!("capa actual + indice: {actual:.3} ms");
+    assert_eq!(
+        d.indices_completos(),
+        enteros,
+        "ningun cambio de capa rehace el indice entero"
+    );
+    assert_eq!(d.indice().len(), hs.len());
+    assert!(apagar * 3.0 < completo, "{apagar} frente a {completo}");
+    assert!(bloquear * 10.0 < completo, "{bloquear} frente a {completo}");
+    if optimizado() {
+        assert!(bloquear < 10.0, "bloquear: {bloquear} ms");
+        assert!(apagar < 30.0, "apagar: {apagar} ms");
+        assert!(actual < 1.0, "capa actual: {actual} ms");
+    }
+}
+
+#[test]
+#[ignore]
+fn rendimiento_asociativas() {
+    let (mut d, hs) = plano();
+    // Mil cotas asociadas a mil lineas.
+    let mut s = Sesion::nueva(d);
+    let t = Instant::now();
+    for h in hs.iter().step_by(200).take(1000) {
+        let cadpixpin_linea = match s.dibujo.entidad(*h) {
+            Some(cad_nucleo::opencadcodec::EntityType::Line(l)) => l.clone(),
+            _ => continue,
+        };
+        let (a, b) = (
+            [cadpixpin_linea.start.x, cadpixpin_linea.start.y],
+            [cadpixpin_linea.end.x, cadpixpin_linea.end.y],
+        );
+        let dim = cad_nucleo::cotas_bloque::alineada(a, b, [a[0], a[1] - 30.0]).unwrap();
+        cad_nucleo::cotas_bloque::crear(&mut s.dibujo, "COTAALINEADA", dim, 25.0, 0);
+    }
+    println!("1000 cotas asociativas: {:.1} ms", ms(t.elapsed()));
+    d = s.dibujo;
+    // El mapa de asociaciones se hace de nuevo (como al abrir).
+    d.tocar();
+    let t = Instant::now();
+    d.editar("NADA", |_| {});
+    println!(
+        "mapa de asociaciones de todo el plano: {:.1} ms",
+        ms(t.elapsed())
+    );
+    // (el indice entero, por el cambio global de antes)
+    let _ = d.indice();
+    // Mover una linea sin cota.
+    let suelta = medir(20, |i| {
+        let h = hs[i * 997 + 1];
+        d.editar("MOVER", |t| {
+            t.cambiar(h, |e| {
+                e.translate(cad_nucleo::opencadcodec::Vector3::new(5.0, 5.0, 0.0))
+            })
+        });
+        let _ = d.indice();
+    });
+    println!("mover 1 linea sin cota + indice: {suelta:.3} ms");
+    // Mover una linea acotada: la cota y su bloque se rehacen.
+    let acotada = medir(20, |i| {
+        let h = hs[i * 200];
+        d.editar("MOVER", |t| {
+            t.cambiar(h, |e| {
+                e.translate(cad_nucleo::opencadcodec::Vector3::new(5.0, 5.0, 0.0))
+            })
+        });
+        let _ = d.indice();
+    });
+    println!("mover 1 linea acotada + indice: {acotada:.3} ms");
+    // Mover mil lineas acotadas de una vez.
+    let mil = medir(3, |_| {
+        d.editar("MOVER", |t| {
+            for h in hs.iter().step_by(200).take(1000) {
+                t.cambiar(*h, |e| {
+                    e.translate(cad_nucleo::opencadcodec::Vector3::new(1.0, 0.0, 0.0))
+                });
+            }
+        });
+        let _ = d.indice();
+    });
+    println!("mover 1000 lineas acotadas + indice: {mil:.1} ms");
+    if optimizado() {
+        assert!(suelta < 5.0, "mover sin cota: {suelta} ms");
+        assert!(acotada < 5.0, "mover acotada: {acotada} ms");
+        assert!(mil < 300.0, "mover mil acotadas: {mil} ms");
+    }
+}
+
 #[test]
 #[ignore]
 fn rendimiento_enganches_y_elegir() {

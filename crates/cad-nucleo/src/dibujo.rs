@@ -9,6 +9,7 @@ use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use opencadcodec::tables::{BlockRecord, Table};
 use opencadcodec::{CadDocument, Color, EntityType, Handle, Layer};
 
 use crate::formas;
@@ -41,11 +42,35 @@ struct Cambio {
     despues: Option<Arc<EntityType>>,
 }
 
+/// Un cambio de una definicion de bloque (su registro): como estaba y como
+/// quedo (`None`: no estaba).
+#[derive(Debug, Clone)]
+struct CambioBloque {
+    nombre: String,
+    antes: Option<BlockRecord>,
+    despues: Option<BlockRecord>,
+}
+
 /// Lo que hizo una orden, para deshacerlo de una vez.
 #[derive(Debug, Clone)]
 struct Paso {
     nombre: String,
     cambios: Vec<Cambio>,
+    /// Los bloques que creo (los `*Dn` de las cotas, los de BLOQUE…).
+    bloques: Vec<CambioBloque>,
+}
+
+/// **Lo que cambio en una version**, para [`Dibujo::cambios_desde`].
+#[derive(Debug, Clone)]
+enum Apunte {
+    /// Estas entidades (anadidas, cambiadas o quitadas).
+    Entidades(Vec<Handle>),
+    /// Estas entidades no cambiaron, pero si su capa (se encendio, se apago,
+    /// se bloqueo, cambio de color…): el indice solo les pone al dia si se
+    /// ven y si estan bloqueadas.
+    Capas(Vec<Handle>),
+    /// No se sabe que: hay que mirarlo todo.
+    Todo,
 }
 
 impl Paso {
@@ -211,6 +236,9 @@ pub struct Indice {
     fuera: usize,
     /// Cuantas entradas habia al hacer la rejilla.
     al_hacerla: usize,
+    /// Las entradas que se quitaron por apagar su capa, ya con sus formas:
+    /// al encenderla vuelven sin volver a sacarlas.
+    ocultas: PorHandle<Entrada>,
 }
 
 impl Default for Indice {
@@ -227,6 +255,7 @@ impl Default for Indice {
             celdas: Vec::new(),
             fuera: 0,
             al_hacerla: 0,
+            ocultas: PorHandle::default(),
         }
     }
 }
@@ -259,18 +288,141 @@ impl Indice {
         let modelo = doc.block_records.get("*Model_Space").map(|b| b.handle);
         let mut capas = Capas::de(doc);
         for h in hs {
-            let estaba = self.quitar(*h);
+            let estaba = self.quitar(*h).is_some();
+            // Lo guardado de cuando se apago su capa ya no vale.
+            let oculta = self.ocultas.remove(h).is_some();
             let Some(e) = doc.get_entity(*h) else {
                 continue;
             };
             // Lo de los bloques y las presentaciones no va al indice.
-            if !estaba && Some(e.common().owner_handle) != modelo {
+            if !estaba && !oculta && Some(e.common().owner_handle) != modelo {
                 continue;
             }
             if let Some(en) = entrada(&mut capas, e) {
                 self.poner(en);
             }
         }
+        self.ajustar_rejilla();
+    }
+
+    /// **Pone al dia lo de los handles `hs` cuya capa cambio** (pero ellos
+    /// no): sale del indice lo que ya no se ve (guardando sus formas), vuelve
+    /// lo que se ve otra vez y se cambia si esta bloqueado. Solo se sacan
+    /// las formas de lo que vuelve sin haber estado antes.
+    pub fn actualizar_capas(&mut self, doc: &CadDocument, hs: &[Handle]) {
+        let modelo = doc.block_records.get("*Model_Space").map(|b| b.handle);
+        let mut capas = Capas::de(doc);
+        // Lo que sale (ya no se ve; con si sigue en el dibujo, para guardar
+        // sus formas) y lo que entra (se ve otra vez).
+        let mut salen: Vec<(Handle, bool)> = Vec::new();
+        let mut entran: Vec<Entrada> = Vec::new();
+        for h in hs {
+            let Some(e) = doc.get_entity(*h) else {
+                salen.push((*h, false));
+                self.ocultas.remove(h);
+                continue;
+            };
+            let c = e.common();
+            let (visible, bloqueada) = capas.estado(&c.layer);
+            if !visible || c.invisible {
+                if self.lugar.contains_key(h) {
+                    salen.push((*h, true));
+                }
+                continue;
+            }
+            if let Some(k) = self.lugar.get(h) {
+                self.entradas[*k as usize].bloqueada = bloqueada;
+                continue;
+            }
+            let en = match self.ocultas.remove(h) {
+                Some(mut en) => {
+                    en.bloqueada = bloqueada;
+                    Some(en)
+                }
+                None if Some(c.owner_handle) == modelo => entrada(&mut capas, e),
+                None => None,
+            };
+            entran.extend(en);
+        }
+        // Muchas de una vez: mejor quitarlas todas de una pasada y repartir
+        // otra vez la rejilla (sin sacar formas) que una a una.
+        if (salen.len() + entran.len()) * 8 > self.entradas.len() {
+            self.cambiar_en_bloque(&salen, entran);
+            return;
+        }
+        for (h, sigue) in salen {
+            if let Some(en) = self.quitar(h)
+                && sigue
+            {
+                self.ocultas.insert(h, en);
+            }
+        }
+        for en in entran {
+            self.poner(en);
+        }
+        self.ajustar_rejilla();
+    }
+
+    /// Quita las entradas de `salen` (guardando en `ocultas` las que siguen
+    /// en el dibujo) de una pasada: se juntan las que quedan y se renumeran
+    /// en las celdas, sin volver a repartirlas. Luego pone las de `entran`.
+    fn cambiar_en_bloque(&mut self, salen: &[(Handle, bool)], entran: Vec<Entrada>) {
+        const FUERA: u32 = u32::MAX;
+        let n = self.entradas.len();
+        // 0: se queda; 1: sale; 2: sale y se guarda.
+        let mut sale = vec![0u8; n];
+        for (h, sigue) in salen {
+            if let Some(k) = self.lugar.remove(h) {
+                sale[k as usize] = 1 + *sigue as u8;
+            }
+        }
+        // Donde queda cada una al juntar las que se quedan (en su orden).
+        let mut nuevo = vec![FUERA; n];
+        let mut j = 0u32;
+        for k in 0..n {
+            if sale[k] == 0 {
+                nuevo[k] = j;
+                j += 1;
+            }
+        }
+        let t = self.caja;
+        self.ocultas.reserve(salen.len());
+        let viejas = std::mem::take(&mut self.entradas);
+        self.entradas.reserve(j as usize + entran.len());
+        for (k, en) in viejas.into_iter().enumerate() {
+            if sale[k] == 0 {
+                self.entradas.push(en);
+                continue;
+            }
+            let c = en.caja;
+            if c[0] <= t[0] || c[1] <= t[1] || c[2] >= t[2] || c[3] >= t[3] {
+                self.caja_vieja = true;
+            }
+            if !self.celdas.is_empty() && !geo::contiene(&self.marco, &c) {
+                self.fuera = self.fuera.saturating_sub(1);
+            }
+            if sale[k] == 2 {
+                self.ocultas.insert(en.handle, en);
+            }
+        }
+        for v in self.lugar.values_mut() {
+            *v = nuevo[*v as usize];
+        }
+        for celda in &mut self.celdas {
+            celda.retain_mut(|k| {
+                *k = nuevo[*k as usize];
+                *k != FUERA
+            });
+        }
+        for en in entran {
+            self.poner(en);
+        }
+        self.ajustar_rejilla();
+    }
+
+    /// Rehace la rejilla si ya no le va al numero de entradas (o se salen
+    /// demasiadas), o si no, recalcula la caja si hace falta.
+    fn ajustar_rejilla(&mut self) {
         let n = self.entradas.len();
         let base = self.al_hacerla.max(MINIMO_REJILLA);
         if (self.celdas.is_empty() && n > 0)
@@ -315,9 +467,23 @@ impl Indice {
         self.lado = lado;
         self.columnas = ((w / lado).ceil() as usize).clamp(1, 1024);
         self.filas = ((h / lado).ceil() as usize).clamp(1, 1024);
-        let mut celdas = vec![Vec::new(); self.columnas * self.filas];
-        for (k, e) in self.entradas.iter().enumerate() {
-            let (c0, f0, c1, f1) = self.rango(&e.caja);
+        // Dos pasadas: cuantas van a cada celda y luego cada una (sin que las
+        // listas crezcan a saltos).
+        let rangos: Vec<(usize, usize, usize, usize)> =
+            self.entradas.iter().map(|e| self.rango(&e.caja)).collect();
+        let mut cuantas = vec![0u32; self.columnas * self.filas];
+        for &(c0, f0, c1, f1) in &rangos {
+            for f in f0..=f1 {
+                for c in c0..=c1 {
+                    cuantas[f * self.columnas + c] += 1;
+                }
+            }
+        }
+        let mut celdas: Vec<Vec<u32>> = cuantas
+            .iter()
+            .map(|n| Vec::with_capacity(*n as usize))
+            .collect();
+        for (k, &(c0, f0, c1, f1)) in rangos.iter().enumerate() {
             for f in f0..=f1 {
                 for c in c0..=c1 {
                     celdas[f * self.columnas + c].push(k as u32);
@@ -379,11 +545,9 @@ impl Indice {
         self.meter_en_celdas(k);
     }
 
-    /// Quita la entrada del handle `h`; dice si estaba.
-    fn quitar(&mut self, h: Handle) -> bool {
-        let Some(k) = self.lugar.remove(&h) else {
-            return false;
-        };
+    /// Quita la entrada del handle `h` y la devuelve (si estaba).
+    fn quitar(&mut self, h: Handle) -> Option<Entrada> {
+        let k = self.lugar.remove(&h)?;
         let k = k as usize;
         let c = self.entradas[k].caja;
         let t = self.caja;
@@ -397,8 +561,7 @@ impl Indice {
             self.cambiar_en_celdas(ultima, Some(k as u32));
             self.lugar.insert(self.entradas[ultima].handle, k as u32);
         }
-        self.entradas.swap_remove(k);
-        true
+        Some(self.entradas.swap_remove(k))
     }
 
     fn rango(&self, c: &Caja) -> (usize, usize, usize, usize) {
@@ -487,13 +650,124 @@ pub struct Dibujo {
     version: u64,
     guardada: u64,
     indice: RefCell<Option<(u64, std::rc::Rc<Indice>)>>,
-    /// Que cambio en cada version (`None`: algo que no es de entidades, como
-    /// una capa, que obliga a mirarlo todo). Las ultimas [`BITACORA`].
-    bitacora: std::collections::VecDeque<(u64, Option<Vec<Handle>>)>,
+    /// Cuantas veces se hizo el indice entero.
+    completos: std::cell::Cell<u64>,
+    /// Que cambio en cada version. Las ultimas [`BITACORA`].
+    bitacora: std::collections::VecDeque<(u64, Apunte)>,
+    /// Las entidades de cada capa (se hace la primera vez que cambia una
+    /// capa y luego se pone al dia con cada orden).
+    por_capa: Option<PorCapa>,
+    /// Las cotas y los sombreados asociativos y lo que miden (se hace en la
+    /// primera orden y luego se pone al dia con cada una).
+    asociados: Option<crate::asociar::Mapa>,
 }
 
 /// Cuantas versiones recuerda [`Dibujo::cambios_desde`].
 const BITACORA: usize = 256;
+
+/// **Las entidades de cada capa**, para saber que cambia al apagar o
+/// bloquear una sin recorrer el dibujo.
+#[derive(Debug, Default)]
+struct PorCapa {
+    /// Las del espacio modelo, por el nombre de su capa (tal cual se
+    /// escribio en la entidad).
+    modelo: HashMap<String, PorHandle<()>>,
+    /// Las capas que usan las entidades de los bloques (menos la 0, que
+    /// toma la del INSERT): cambiar una de esas cambia los INSERT.
+    en_bloques: std::collections::HashSet<String>,
+    modelo_h: Handle,
+    /// Los registros de los espacios (el modelo y los papeles), que no son
+    /// bloques.
+    espacios: Vec<Handle>,
+}
+
+impl PorCapa {
+    fn de(doc: &CadDocument) -> PorCapa {
+        let mut pc = PorCapa {
+            modelo_h: doc
+                .block_records
+                .get("*Model_Space")
+                .map_or(Handle::NULL, |b| b.handle),
+            espacios: doc
+                .block_records
+                .iter()
+                .filter(|b| {
+                    let n = b.name.to_ascii_uppercase();
+                    n.starts_with("*MODEL_SPACE") || n.starts_with("*PAPER_SPACE")
+                })
+                .map(|b| b.handle)
+                .collect(),
+            ..Default::default()
+        };
+        for br in doc.block_records.iter() {
+            if br.handle != pc.modelo_h && pc.espacios.contains(&br.handle) {
+                continue;
+            }
+            for h in &br.entity_handles {
+                if let Some(e) = doc.get_entity(*h) {
+                    pc.poner(*h, e);
+                }
+            }
+        }
+        pc
+    }
+
+    fn poner(&mut self, h: Handle, e: &EntityType) {
+        let c = e.common();
+        if c.owner_handle == self.modelo_h {
+            match self.modelo.get_mut(c.layer.as_str()) {
+                Some(v) => {
+                    v.insert(h, ());
+                }
+                None => {
+                    let mut v = PorHandle::default();
+                    v.insert(h, ());
+                    self.modelo.insert(c.layer.clone(), v);
+                }
+            }
+        } else if c.layer != "0"
+            && !self.espacios.contains(&c.owner_handle)
+            && !self.en_bloques.contains(c.layer.as_str())
+        {
+            self.en_bloques.insert(c.layer.clone());
+        }
+    }
+
+    /// Pone al dia la entidad `h`, que estaba como `antes` y quedo como
+    /// `despues`.
+    fn mover(&mut self, h: Handle, antes: Option<&EntityType>, despues: Option<&EntityType>) {
+        if let Some(a) = antes
+            && a.common().owner_handle == self.modelo_h
+            && let Some(v) = self.modelo.get_mut(a.common().layer.as_str())
+        {
+            v.remove(&h);
+        }
+        if let Some(d) = despues {
+            self.poner(h, d);
+        }
+    }
+
+    /// Las entidades del espacio modelo en estas capas, o `None` si alguna
+    /// se usa dentro de un bloque.
+    fn entidades_de(&self, nombres: &[String]) -> Option<Vec<Handle>> {
+        let es = |n: &str| nombres.iter().any(|x| igual_nombre(x, n));
+        if self.en_bloques.iter().any(|n| es(n)) {
+            return None;
+        }
+        Some(
+            self.modelo
+                .iter()
+                .filter(|(n, _)| es(n))
+                .flat_map(|(_, v)| v.keys().copied())
+                .collect(),
+        )
+    }
+}
+
+/// Si dos nombres de capa son el mismo (sin mirar mayusculas).
+fn igual_nombre(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b) || (!a.is_ascii() && a.to_uppercase() == b.to_uppercase())
+}
 
 impl Dibujo {
     pub fn de_documento(doc: CadDocument, ruta: Option<PathBuf>) -> Dibujo {
@@ -505,7 +779,10 @@ impl Dibujo {
             version: 1,
             guardada: 1,
             indice: RefCell::new(None),
+            completos: std::cell::Cell::new(0),
             bitacora: std::collections::VecDeque::new(),
+            por_capa: None,
+            asociados: None,
         }
     }
 
@@ -572,10 +849,25 @@ impl Dibujo {
         self.version != self.guardada
     }
 
-    /// Marca un cambio que no es de entidades (una capa, un ajuste).
+    /// **Marca un cambio global**, que no se sabe a que entidades toca (un
+    /// estilo, un bloque cambiado por fuera, el documento entero): quien
+    /// lea [`Dibujo::cambios_desde`] tiene que mirarlo todo. Para las capas
+    /// esta [`Dibujo::cambiar_capas`], que dice solo lo de esas capas.
     pub fn tocar(&mut self) {
         self.version += 1;
-        self.apuntar_version(None);
+        self.apuntar_version(Apunte::Todo);
+        // Pudo cambiar cualquier cosa por fuera: se vuelven a hacer cuando
+        // hagan falta.
+        self.por_capa = None;
+        self.asociados = None;
+    }
+
+    /// Marca un cambio que no toca a ninguna entidad (la capa actual, una
+    /// capa nueva y vacia): el dibujo queda sin guardar, pero nada que
+    /// pintar.
+    fn tocar_sin_entidades(&mut self) {
+        self.version += 1;
+        self.apuntar_version(Apunte::Entidades(Vec::new()));
     }
 
     pub fn entidad(&self, h: Handle) -> Option<&EntityType> {
@@ -593,30 +885,59 @@ impl Dibujo {
             return ind.clone();
         }
         let ind = match i.take() {
-            Some((v, mut ind)) => match self.cambios_desde(v) {
-                Some(hs) if hs.len() <= ind.len() / 2 => {
+            Some((v, mut ind)) => match self.cambios_por_clase(v) {
+                // Si cambio mas de la mitad, mejor de cero (unos pocos, no:
+                // con casi todo apagado el indice es pequeno).
+                Some((hs, capas)) if hs.len() <= ind.len().max(MINIMO_REJILLA * 2) / 2 => {
                     // Si alguien aun tiene el viejo, se copia (sin volver a
                     // sacar las formas, que es lo caro).
-                    std::rc::Rc::make_mut(&mut ind).actualizar(&self.doc, &hs);
+                    let m = std::rc::Rc::make_mut(&mut ind);
+                    if !hs.is_empty() {
+                        m.actualizar(&self.doc, &hs);
+                    }
+                    if !capas.is_empty() {
+                        m.actualizar_capas(&self.doc, &capas);
+                    }
                     ind
                 }
-                _ => std::rc::Rc::new(Indice::completo(&self.doc)),
+                _ => self.indice_completo(),
             },
-            None => std::rc::Rc::new(Indice::completo(&self.doc)),
+            None => self.indice_completo(),
         };
         *i = Some((self.version, ind.clone()));
         ind
     }
 
+    fn indice_completo(&self) -> std::rc::Rc<Indice> {
+        self.completos.set(self.completos.get() + 1);
+        std::rc::Rc::new(Indice::completo(&self.doc))
+    }
+
+    /// **Cuantas veces se hizo el indice entero** (para comprobar que lo
+    /// que debe ir por partes no lo rehace).
+    pub fn indices_completos(&self) -> u64 {
+        self.completos.get()
+    }
+
     /// **Hace una orden de una vez**: lo que cambie dentro se deshace junto.
     /// Si no cambio nada, no deja paso.
+    ///
+    /// Al final, en el mismo paso, las cotas y los sombreados asociativos
+    /// siguen a lo que miden ([`crate::asociar`]).
     pub fn editar<R>(&mut self, nombre: &str, f: impl FnOnce(&mut Transaccion) -> R) -> R {
-        let mut t = Transaccion {
-            doc: &mut self.doc,
-            cambios: Vec::new(),
-        };
+        if self.asociados.is_none() {
+            self.asociados = Some(crate::asociar::Mapa::de(&self.doc));
+        }
+        let mut t = Transaccion::nueva(&mut self.doc);
         let r = f(&mut t);
-        let mut cambios = std::mem::take(&mut t.cambios);
+        if let Some(m) = &self.asociados {
+            crate::asociar::propagar(&mut t, m);
+        }
+        let Transaccion {
+            mut cambios,
+            mut bloques,
+            ..
+        } = t;
         for c in &mut cambios {
             c.despues = self.doc.get_entity_arc(c.handle);
         }
@@ -625,36 +946,69 @@ impl Dibujo {
             (Some(a), Some(d)) => !Arc::ptr_eq(a, d) && a != d,
             _ => true,
         });
-        if !cambios.is_empty() {
+        for b in &mut bloques {
+            b.despues = self.doc.block_records.get(&b.nombre).cloned();
+        }
+        bloques.retain(|b| b.antes != b.despues);
+        if !cambios.is_empty() || !bloques.is_empty() {
+            self.al_cambiar(&cambios, false);
             self.hecho.push(Paso {
                 nombre: nombre.to_string(),
                 cambios,
+                bloques,
             });
             if self.hecho.len() > PASOS {
                 self.hecho.remove(0);
             }
             self.deshecho.clear();
             self.version += 1;
-            let hs = self.hecho.last().map(Paso::handles);
-            self.apuntar_version(hs);
+            let hs = self.hecho.last().map(Paso::handles).unwrap_or_default();
+            self.apuntar_version(Apunte::Entidades(hs));
         }
         r
     }
 
-    fn apuntar_version(&mut self, hs: Option<Vec<Handle>>) {
-        self.bitacora.push_back((self.version, hs));
+    /// Pone al dia lo que se sabe de las entidades que cambiaron (las capas
+    /// y las asociaciones). `al_reves`: se deshizo (quedaron como `antes`).
+    fn al_cambiar(&mut self, cambios: &[Cambio], al_reves: bool) {
+        for c in cambios {
+            let (antes, despues) = if al_reves {
+                (&c.despues, &c.antes)
+            } else {
+                (&c.antes, &c.despues)
+            };
+            if let Some(pc) = &mut self.por_capa {
+                pc.mover(c.handle, antes.as_deref(), despues.as_deref());
+            }
+            if let Some(m) = &mut self.asociados {
+                m.poner(c.handle, despues.as_deref());
+            }
+        }
+    }
+
+    fn apuntar_version(&mut self, a: Apunte) {
+        self.bitacora.push_back((self.version, a));
         while self.bitacora.len() > BITACORA {
             self.bitacora.pop_front();
         }
     }
 
-    /// **Que entidades cambiaron** (anadidas, cambiadas o quitadas) desde la
-    /// version `v`, sin repetir. `None` si no se sabe (paso algo que no es de
-    /// entidades, como apagar una capa, o `v` es demasiado vieja): entonces
-    /// hay que mirarlo todo.
+    /// **Que entidades cambiaron** (anadidas, cambiadas o quitadas, o en una
+    /// capa que se encendio, apago, bloqueo o cambio) desde la version `v`,
+    /// sin repetir. `None` si no se sabe (paso algo global, ver
+    /// [`Dibujo::tocar`], o `v` es demasiado vieja): entonces hay que
+    /// mirarlo todo.
     pub fn cambios_desde(&self, v: u64) -> Option<Vec<Handle>> {
+        let (mut hs, capas) = self.cambios_por_clase(v)?;
+        hs.extend(capas);
+        Some(hs)
+    }
+
+    /// Lo de [`Dibujo::cambios_desde`] en dos: las entidades que cambiaron y
+    /// las que solo cambiaron de estado por su capa (sin las de antes).
+    fn cambios_por_clase(&self, v: u64) -> Option<(Vec<Handle>, Vec<Handle>)> {
         if v == self.version {
-            return Some(Vec::new());
+            return Some((Vec::new(), Vec::new()));
         }
         if v > self.version {
             return None;
@@ -664,19 +1018,32 @@ impl Dibujo {
         if primera > v + 1 {
             return None;
         }
-        let mut vistos = std::collections::HashSet::new();
+        let mut vistos: PorHandle<()> = PorHandle::default();
         let mut out = Vec::new();
-        for (ver, hs) in &self.bitacora {
+        let mut de_capas: Vec<Handle> = Vec::new();
+        for (ver, a) in &self.bitacora {
             if *ver <= v {
                 continue;
             }
-            for h in hs.as_ref()? {
-                if vistos.insert(*h) {
-                    out.push(*h);
+            match a {
+                Apunte::Entidades(hs) => {
+                    for h in hs {
+                        if vistos.insert(*h, ()).is_none() {
+                            out.push(*h);
+                        }
+                    }
                 }
+                Apunte::Capas(hs) => de_capas.extend(hs),
+                Apunte::Todo => return None,
             }
         }
-        Some(out)
+        let mut capas = Vec::new();
+        for h in de_capas {
+            if vistos.insert(h, ()).is_none() {
+                capas.push(h);
+            }
+        }
+        Some((out, capas))
     }
 
     pub fn se_puede_deshacer(&self) -> bool {
@@ -690,27 +1057,45 @@ impl Dibujo {
     /// Deshace la ultima orden; dice cual era.
     pub fn deshacer(&mut self) -> Option<String> {
         let paso = self.hecho.pop()?;
+        let mut vueltas = Vec::new();
         for c in paso.cambios.iter().rev() {
-            poner(&mut self.doc, c.handle, c.antes.clone());
+            if poner(&mut self.doc, c.handle, c.antes.clone()) {
+                vueltas.push(c.handle);
+            }
         }
+        // Despues de quitar sus entidades: un bloque que creo la orden se va.
+        for b in paso.bloques.iter().rev() {
+            poner_bloque(&mut self.doc, &b.nombre, b.antes.clone());
+        }
+        en_su_bloque(&mut self.doc, &vueltas);
+        self.al_cambiar(&paso.cambios, true);
         let nombre = paso.nombre.clone();
         let hs = paso.handles();
         self.deshecho.push(paso);
         self.version += 1;
-        self.apuntar_version(Some(hs));
+        self.apuntar_version(Apunte::Entidades(hs));
         Some(nombre)
     }
 
     pub fn rehacer(&mut self) -> Option<String> {
         let paso = self.deshecho.pop()?;
-        for c in &paso.cambios {
-            poner(&mut self.doc, c.handle, c.despues.clone());
+        // Antes que sus entidades: el bloque tiene que estar para ellas.
+        for b in &paso.bloques {
+            poner_bloque(&mut self.doc, &b.nombre, b.despues.clone());
         }
+        let mut vueltas = Vec::new();
+        for c in &paso.cambios {
+            if poner(&mut self.doc, c.handle, c.despues.clone()) {
+                vueltas.push(c.handle);
+            }
+        }
+        en_su_bloque(&mut self.doc, &vueltas);
+        self.al_cambiar(&paso.cambios, false);
         let nombre = paso.nombre.clone();
         let hs = paso.handles();
         self.hecho.push(paso);
         self.version += 1;
-        self.apuntar_version(Some(hs));
+        self.apuntar_version(Apunte::Entidades(hs));
         Some(nombre)
     }
 
@@ -726,39 +1111,85 @@ impl Dibujo {
         }
     }
 
+    /// Hace actual una capa (creandola si no esta). No cambia nada de lo
+    /// dibujado.
     pub fn poner_capa_actual(&mut self, nombre: &str) {
         self.asegurar_capa(nombre, 7);
         self.doc.header.current_layer_name = nombre.to_string();
         if let Some(l) = self.doc.layers.get(nombre) {
             self.doc.header.current_layer_handle = l.handle;
         }
-        self.tocar();
+        self.tocar_sin_entidades();
     }
 
-    /// Crea la capa si no esta.
+    /// Crea la capa si no esta (vacia: no cambia nada de lo dibujado).
     pub fn asegurar_capa(&mut self, nombre: &str, color: i16) {
         if !self.doc.layers.contains(nombre) {
             let _ = self
                 .doc
                 .layers
                 .add(Layer::with_color(nombre, Color::from_index(color)));
-            self.tocar();
+            self.tocar_sin_entidades();
         }
     }
 
-    /// Cambia algo de una capa (encender, bloquear, color…).
+    /// Cambia algo de una capa (encender, inutilizar, bloquear, color…);
+    /// `false` si no esta. Ver [`Dibujo::cambiar_capas`].
     pub fn con_capa(&mut self, nombre: &str, f: impl FnOnce(&mut Layer)) -> bool {
-        let Some(l) = self.doc.layers.get_mut(nombre) else {
+        if !self.doc.layers.contains(nombre) {
             return false;
-        };
-        f(l);
-        self.tocar();
+        }
+        self.cambiar_capas(|capas| {
+            if let Some(l) = capas.get_mut(nombre) {
+                f(l);
+            }
+        });
         true
+    }
+
+    /// **Cambia las capas** con `f` (encender, apagar, inutilizar, bloquear,
+    /// color…) y apunta solo las entidades de las capas que cambiaron: el
+    /// indice les pone al dia si se ven y si estan bloqueadas sin rehacerse
+    /// entero. Si una de esas capas se usa dentro de un bloque (cambia como
+    /// se ven sus INSERT) o se quito o renombro una, se marca como global
+    /// ([`Dibujo::tocar`]).
+    pub fn cambiar_capas<R>(&mut self, f: impl FnOnce(&mut Table<Layer>) -> R) -> R {
+        let antes = self.doc.layers.clone();
+        let r = f(&mut self.doc.layers);
+        let mut cambiadas: Vec<String> = Vec::new();
+        let mut quitadas = false;
+        for l in self.doc.layers.iter() {
+            if antes.get(&l.name) != Some(l) {
+                cambiadas.push(l.name.clone());
+            }
+        }
+        for l in antes.iter() {
+            if !self.doc.layers.contains(&l.name) {
+                quitadas = true;
+            }
+        }
+        if quitadas {
+            self.tocar();
+            return r;
+        }
+        if cambiadas.is_empty() {
+            return r;
+        }
+        let pc = self.por_capa.get_or_insert_with(|| PorCapa::de(&self.doc));
+        match pc.entidades_de(&cambiadas) {
+            Some(hs) => {
+                self.version += 1;
+                self.apuntar_version(Apunte::Capas(hs));
+            }
+            None => self.tocar(),
+        }
+        r
     }
 }
 
-/// Deja la entidad `h` como `e` (o la quita si `None`).
-fn poner(doc: &mut CadDocument, h: Handle, e: Option<Arc<EntityType>>) {
+/// Deja la entidad `h` como `e` (o la quita si `None`); dice si la volvio a
+/// poner (no estaba y ahora si).
+fn poner(doc: &mut CadDocument, h: Handle, e: Option<Arc<EntityType>>) -> bool {
     let esta = doc.get_entity(h).is_some();
     match (esta, e) {
         (true, Some(e)) => {
@@ -768,9 +1199,50 @@ fn poner(doc: &mut CadDocument, h: Handle, e: Option<Arc<EntityType>>) {
             doc.remove_entity_arc(h);
         }
         (false, Some(e)) => {
-            doc.restore_entity_arc(e);
+            return doc.restore_entity_arc(e).is_some();
         }
         (false, None) => {}
+    }
+    false
+}
+
+/// Deja el registro del bloque `nombre` como `br` (o lo quita si `None`).
+fn poner_bloque(doc: &mut CadDocument, nombre: &str, br: Option<BlockRecord>) {
+    match br {
+        Some(br) => doc.block_records.add_or_replace(br),
+        None => {
+            doc.block_records.remove(nombre);
+        }
+    }
+}
+
+/// **Que las entidades que volvieron sigan en su bloque**: al quitar una
+/// entidad su handle se queda en la lista del bloque, pero si el bloque se
+/// quito y volvio (deshacer y rehacer su orden) la lista es la de entonces y
+/// le pueden faltar las que se le pusieron despues.
+fn en_su_bloque(doc: &mut CadDocument, hs: &[Handle]) {
+    let modelo = doc.block_records.get("*Model_Space").map(|b| b.handle);
+    let mut por_dueno: PorHandle<Vec<Handle>> = PorHandle::default();
+    for h in hs {
+        if let Some(e) = doc.get_entity(*h) {
+            let d = e.common().owner_handle;
+            if !d.is_null() && Some(d) != modelo {
+                por_dueno.entry(d).or_default().push(*h);
+            }
+        }
+    }
+    if por_dueno.is_empty() {
+        return;
+    }
+    for br in doc.block_records.iter_mut() {
+        if let Some(v) = por_dueno.get(&br.handle) {
+            let ya: std::collections::HashSet<Handle> = br.entity_handles.iter().copied().collect();
+            for h in v {
+                if !ya.contains(h) {
+                    br.entity_handles.push(*h);
+                }
+            }
+        }
     }
 }
 
@@ -778,12 +1250,27 @@ fn poner(doc: &mut CadDocument, h: Handle, e: Option<Arc<EntityType>>) {
 pub struct Transaccion<'a> {
     doc: &'a mut CadDocument,
     cambios: Vec<Cambio>,
+    /// Donde esta cada handle en `cambios`.
+    lugar: PorHandle<usize>,
+    bloques: Vec<CambioBloque>,
+}
+
+impl<'a> Transaccion<'a> {
+    fn nueva(doc: &'a mut CadDocument) -> Transaccion<'a> {
+        Transaccion {
+            doc,
+            cambios: Vec::new(),
+            lugar: PorHandle::default(),
+            bloques: Vec::new(),
+        }
+    }
 }
 
 impl Transaccion<'_> {
     fn apuntar(&mut self, h: Handle) {
-        if !self.cambios.iter().any(|c| c.handle == h) {
+        if !self.lugar.contains_key(&h) {
             let antes = self.doc.get_entity_arc(h);
+            self.lugar.insert(h, self.cambios.len());
             self.cambios.push(Cambio {
                 handle: h,
                 antes,
@@ -800,10 +1287,59 @@ impl Transaccion<'_> {
         self.doc.get_entity(h)
     }
 
-    /// Anade una entidad nueva (sin handle: se le da uno).
+    /// **Lo que ya cambio en esta orden** (anadido, cambiado o quitado).
+    pub fn cambiadas(&self) -> Vec<Handle> {
+        self.cambios.iter().map(|c| c.handle).collect()
+    }
+
+    /// Si `h` cambio en esta orden.
+    pub fn cambio(&self, h: Handle) -> bool {
+        self.lugar.contains_key(&h)
+    }
+
+    /// **Como estaba `h` antes de la orden** (`None`: no estaba, o no
+    /// cambio y esta como ahora).
+    pub fn antes(&self, h: Handle) -> Option<&EntityType> {
+        match self.lugar.get(&h) {
+            Some(k) => self.cambios[*k].antes.as_deref(),
+            None => self.doc.get_entity(h),
+        }
+    }
+
+    /// Un handle nuevo (para un registro de bloque).
+    pub fn nuevo_handle(&mut self) -> Handle {
+        self.doc.allocate_handle()
+    }
+
+    /// **Crea el registro de un bloque** (con su handle ya puesto) dentro de
+    /// la orden: al deshacerla se quita y al rehacerla vuelve. Sus entidades
+    /// se anaden luego con [`Transaccion::anadir`] (con su dueno).
+    pub fn anadir_bloque(&mut self, br: BlockRecord) -> Result<Handle, String> {
+        let nombre = br.name.clone();
+        let h = br.handle;
+        if !self
+            .bloques
+            .iter()
+            .any(|b| b.nombre.eq_ignore_ascii_case(&nombre))
+        {
+            self.bloques.push(CambioBloque {
+                antes: self.doc.block_records.get(&nombre).cloned(),
+                nombre: nombre.clone(),
+                despues: None,
+            });
+        }
+        self.doc.block_records.add(br)?;
+        Ok(h)
+    }
+
+    /// Anade una entidad nueva (sin handle: se le da uno). Una copia no
+    /// sigue a lo que seguia el original (sus asociaciones se quitan; ver
+    /// [`crate::asociar::soltar`]).
     pub fn anadir(&mut self, mut e: EntityType) -> Option<Handle> {
         e.as_entity_mut().set_handle(Handle::NULL);
+        crate::asociar::soltar(&mut e);
         let h = self.doc.add_entity(e).ok()?;
+        self.lugar.insert(h, self.cambios.len());
         self.cambios.push(Cambio {
             handle: h,
             antes: None,
@@ -1001,11 +1537,209 @@ mod pruebas {
         assert_eq!(d.cambios_desde(d.version()), Some(vec![]));
         d.deshacer();
         assert_eq!(d.cambios_desde(v1), Some(vec![b]));
-        // Algo que no es de entidades: no se sabe.
+        // Apagar una capa: lo de esa capa.
+        let v2 = d.version();
         d.con_capa("0", |l| l.turn_off());
+        assert_eq!(d.cambios_desde(v2), Some(vec![a]));
+        // Algo global: no se sabe.
+        d.tocar();
         assert_eq!(d.cambios_desde(v1), None);
         // Caso negativo: una version que aun no existe.
         assert_eq!(d.cambios_desde(d.version() + 5), None);
+    }
+
+    #[test]
+    fn cambiar_una_capa_dice_solo_sus_entidades() {
+        let mut d = Dibujo::nuevo();
+        let (a, b) = d.editar("X", |t| {
+            (
+                t.anadir_en(linea(0.0, 0.0, 1.0, 0.0), "A-MUROS").unwrap(),
+                t.anadir_en(linea(0.0, 1.0, 1.0, 1.0), "E-ESTRUCTURAS")
+                    .unwrap(),
+            )
+        });
+        let v = d.version();
+        assert!(d.con_capa("a-muros", |l| l.lock()));
+        assert_eq!(d.cambios_desde(v), Some(vec![a]));
+        assert!(d.sucio());
+        // Sin cambio de verdad: ni version nueva.
+        let v = d.version();
+        assert!(d.con_capa("A-MUROS", |l| l.lock()));
+        assert_eq!(d.version(), v);
+        // Caso negativo: una capa que no esta.
+        assert!(!d.con_capa("NO-HAY", |l| l.turn_off()));
+        assert_eq!(d.version(), v);
+        // La capa actual no cambia nada de lo dibujado.
+        d.poner_capa_actual("E-ESTRUCTURAS");
+        assert_eq!(d.cambios_desde(v), Some(vec![]));
+        assert!(d.version() > v);
+        // Varias de una vez; tambien lo que se mueve de capa despues.
+        let v = d.version();
+        d.editar("CAPA", |t| {
+            t.cambiar(b, |e| e.common_mut().layer = "A-MUROS".into())
+        });
+        let v2 = d.version();
+        d.cambiar_capas(|t| {
+            for l in t.iter_mut() {
+                l.turn_off();
+            }
+        });
+        let mut hs = d.cambios_desde(v2).unwrap();
+        hs.sort();
+        assert_eq!(hs, {
+            let mut x = vec![a, b];
+            x.sort();
+            x
+        });
+        assert_eq!(d.cambios_desde(v).map(|v| v.len()), Some(2));
+        // Una capa que se usa dentro de un bloque cambia sus INSERT: global.
+        let v = d.version();
+        d.editar("BLOQUE", |t| {
+            crate::bloque::definir_en(
+                t,
+                "CON-MUROS",
+                vec![crate::especialidad::linea([0.0, 0.0], [1.0, 0.0])],
+                [0.0, 0.0],
+            )
+            .unwrap();
+        });
+        // (lo que va en el bloque esta en la capa 0, que toma la del INSERT)
+        d.con_capa("A-MUROS", |l| l.turn_on());
+        assert!(d.cambios_desde(v).is_some());
+        let v = d.version();
+        d.editar("BLOQUE", |t| {
+            let mut e = crate::especialidad::linea([0.0, 0.0], [1.0, 0.0]);
+            e.common_mut().layer = "A-MUROS".into();
+            crate::bloque::definir_en(t, "CON-MUROS-2", vec![e], [0.0, 0.0]).unwrap();
+        });
+        d.con_capa("A-MUROS", |l| l.turn_off());
+        assert_eq!(d.cambios_desde(v), None);
+        // Quitar una capa tambien.
+        let v = d.version();
+        d.cambiar_capas(|t| {
+            t.remove("E-ESTRUCTURAS");
+        });
+        assert_eq!(d.cambios_desde(v), None);
+    }
+
+    #[test]
+    fn apagar_y_bloquear_no_rehacen_el_indice_y_queda_igual_que_rehecho() {
+        let mut d = Dibujo::nuevo();
+        let mut az = Azar(11);
+        let capas = ["A-MUROS", "E-ESTRUCTURAS", "0", "A-MOBILIARIO"];
+        d.editar("X", |t| {
+            for i in 0..400 {
+                let (x, y) = (az.sig() * 1000.0, az.sig() * 1000.0);
+                let e = linea(x, y, x + 30.0, y + 10.0);
+                t.anadir_en(e, capas[i % capas.len()]);
+            }
+        });
+        let _ = d.indice();
+        let completos = d.indices_completos();
+        for ronda in 0..120 {
+            let capa = capas[az.hasta(capas.len())];
+            match az.hasta(8) {
+                0 => {
+                    d.con_capa(capa, |l| l.turn_off());
+                }
+                1 => {
+                    d.con_capa(capa, |l| l.turn_on());
+                }
+                2 => {
+                    d.con_capa(capa, |l| l.lock());
+                }
+                3 => {
+                    d.con_capa(capa, |l| l.unlock());
+                }
+                4 => {
+                    d.con_capa(capa, |l| if l.is_frozen() { l.thaw() } else { l.freeze() });
+                }
+                5 => {
+                    // Mover algo (aunque este apagado) y cambiar de capa.
+                    let hs: Vec<Handle> = d
+                        .doc
+                        .model_space_entities()
+                        .map(|e| e.common().handle)
+                        .collect();
+                    let h = hs[az.hasta(hs.len())];
+                    let otra = capas[az.hasta(capas.len())];
+                    d.editar("MOVER", |t| {
+                        t.cambiar(h, |e| {
+                            e.translate(opencadcodec::Vector3::new(5.0, 0.0, 0.0));
+                            e.common_mut().layer = otra.into();
+                        })
+                    });
+                }
+                // (sin deshacer el dibujo entero)
+                6 if d.hecho.len() > 1 => {
+                    d.deshacer();
+                }
+                _ => {
+                    d.rehacer();
+                }
+            }
+            if ronda % 3 == 0 {
+                igual_que_de_cero(&d, &mut az);
+            }
+        }
+        igual_que_de_cero(&d, &mut az);
+        // Ni una vez entero (las capas ponen al dia solo lo suyo).
+        assert_eq!(d.indices_completos(), completos);
+        // Caso negativo: algo global si lo rehace.
+        d.tocar();
+        let _ = d.indice();
+        assert_eq!(d.indices_completos(), completos + 1);
+    }
+
+    #[test]
+    fn un_bloque_creado_en_una_orden_se_va_al_deshacer_y_vuelve_al_rehacer() {
+        let mut d = Dibujo::nuevo();
+        let h = d
+            .editar("BLOQUE", |t| {
+                crate::bloque::definir_en(t, "Caja", vec![linea(0.0, 0.0, 1.0, 0.0)], [0.0, 0.0])
+            })
+            .unwrap();
+        assert!(d.doc.block_records.contains("CAJA"));
+        // Otra orden le cambia lo de dentro.
+        let pieza = d
+            .doc
+            .entities_in_block("Caja")
+            .next()
+            .unwrap()
+            .common()
+            .handle;
+        d.editar("CAMBIAR", |t| {
+            t.quitar(pieza);
+            let mut e = linea(0.0, 0.0, 5.0, 0.0);
+            e.common_mut().owner_handle = h;
+            t.anadir(e);
+        });
+        let largo = |d: &Dibujo| -> Vec<f64> {
+            d.doc
+                .entities_in_block("Caja")
+                .map(|e| match e {
+                    EntityType::Line(l) => l.length(),
+                    _ => 0.0,
+                })
+                .collect()
+        };
+        assert_eq!(largo(&d), vec![5.0]);
+        d.deshacer();
+        d.deshacer();
+        assert!(!d.doc.block_records.contains("CAJA"));
+        assert!(d.doc.entities_in_block("Caja").next().is_none());
+        d.rehacer();
+        assert_eq!(largo(&d), vec![1.0]);
+        d.rehacer();
+        // Lo anadido despues sigue en el bloque aunque este volvio de cero.
+        assert_eq!(largo(&d), vec![5.0]);
+        // Caso negativo: un nombre que ya esta no deja paso.
+        let pasos = d.hecho.len();
+        let r = d.editar("BLOQUE", |t| {
+            crate::bloque::definir_en(t, "caja", vec![linea(0.0, 0.0, 1.0, 0.0)], [0.0, 0.0])
+        });
+        assert!(r.is_err());
+        assert_eq!(d.hecho.len(), pasos);
     }
 
     #[test]
@@ -1144,9 +1878,12 @@ mod pruebas {
         }
         igual_que_de_cero(&d, &mut az);
         assert!(d.indice().len() > 100);
-        // Apagar una capa no se sabe por handles: se rehace entero.
+        // Apagar una capa: sale lo suyo.
         d.con_capa("0", |l| l.turn_off());
         assert_eq!(d.indice().len(), 0);
+        igual_que_de_cero(&d, &mut az);
+        d.con_capa("0", |l| l.turn_on());
+        assert!(d.indice().len() > 100);
         igual_que_de_cero(&d, &mut az);
     }
 

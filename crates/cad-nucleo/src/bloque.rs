@@ -2,13 +2,14 @@
 //! relativas al punto base), saber cuales hay, ponerlo con un INSERT y sus
 //! formas para la vista previa.
 //!
-//! La definicion no entra en el deshacer (como un estilo o una capa): lo que
-//! se deshace es lo del espacio modelo (los originales y el INSERT).
+//! Con [`definir_en`] la definicion entra en el deshacer de la orden: al
+//! deshacer BLOQUE no queda un bloque huerfano.
 
 use opencadcodec::entities::Insert;
 use opencadcodec::tables::BlockRecord;
 use opencadcodec::{CadDocument, EntityType, Handle, Vector3};
 
+use crate::dibujo::Transaccion;
 use crate::formas::{self, p2, v3};
 use crate::geo::{self, Forma, P};
 use crate::operaciones as op;
@@ -70,29 +71,75 @@ pub fn definir(
     entidades: Vec<EntityType>,
     base: P,
 ) -> Result<Handle, String> {
+    let nombre = revisar(doc, nombre)?;
+    let hs = [(); 3].map(|_| doc.allocate_handle());
+    let (br, piezas) = preparar(&nombre, entidades, base, hs);
+    let h = br.handle;
+    doc.block_records.add(br)?;
+    for e in piezas {
+        doc.add_entity(e).map_err(|e| e.to_string())?;
+    }
+    Ok(h)
+}
+
+/// **Como [`definir`], dentro de una orden**: al deshacerla la definicion
+/// (el registro y sus entidades) se va, y al rehacerla vuelve.
+pub fn definir_en(
+    t: &mut Transaccion,
+    nombre: &str,
+    entidades: Vec<EntityType>,
+    base: P,
+) -> Result<Handle, String> {
+    let nombre = revisar(t.doc(), nombre)?;
+    let hs = [(); 3].map(|_| t.nuevo_handle());
+    let (br, piezas) = preparar(&nombre, entidades, base, hs);
+    let h = t.anadir_bloque(br)?;
+    for e in piezas {
+        t.anadir(e)
+            .ok_or("No se pudo anadir una entidad al bloque")?;
+    }
+    Ok(h)
+}
+
+/// El nombre limpio, si vale y no lo tiene ya otro bloque.
+fn revisar(doc: &CadDocument, nombre: &str) -> Result<String, String> {
     let nombre = validar_nombre(nombre)?;
     if existe(doc, &nombre) {
         return Err(format!("Ya hay un bloque «{nombre}»"));
     }
-    let mut br = BlockRecord::new(nombre.clone());
-    br.handle = doc.allocate_handle();
-    br.block_entity_handle = doc.allocate_handle();
-    br.block_end_handle = doc.allocate_handle();
+    Ok(nombre)
+}
+
+/// El registro nuevo de `nombre` (con los handles `hs`: el suyo, el del
+/// BLOCK y el del ENDBLK) y las entidades ya corridas al punto base y con su
+/// dueno. Dentro de un bloque no siguen asociadas a lo de fuera.
+fn preparar(
+    nombre: &str,
+    entidades: Vec<EntityType>,
+    base: P,
+    hs: [Handle; 3],
+) -> (BlockRecord, Vec<EntityType>) {
+    let mut br = BlockRecord::new(nombre);
+    br.handle = hs[0];
+    br.block_entity_handle = hs[1];
+    br.block_end_handle = hs[2];
     // El punto base queda en 0,0: las entidades ya van corridas. Asi lo ve
     // igual quien lea la base del registro o la del marcador BLOCK.
     br.base_point = Vector3::ZERO;
     let h = br.handle;
-    doc.block_records.add(br)?;
     let corrimiento = Vector3::new(-base[0], -base[1], 0.0);
-    for mut e in entidades {
-        if !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
+    let piezas = entidades
+        .into_iter()
+        .filter(|e| !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)))
+        .map(|mut e| {
             e.translate(corrimiento);
             e.as_entity_mut().set_handle(Handle::NULL);
             e.common_mut().owner_handle = h;
-            doc.add_entity(e).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(h)
+            crate::asociar::soltar(&mut e);
+            e
+        })
+        .collect();
+    (br, piezas)
 }
 
 /// El punto base de un bloque (el del marcador BLOCK si lo hay, que es el

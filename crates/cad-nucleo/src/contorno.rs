@@ -4,12 +4,15 @@
 //! la mas pequena que encierra el punto, con sus islas.
 //!
 //! Vale igual para una polilinea cerrada o un circulo que para cuatro lineas
-//! sueltas que se cruzan, o un muro hecho de lineas y arcos.
+//! sueltas que se cruzan, o un muro hecho de lineas y arcos. Los huecos
+//! pequenos entre extremos que casi se tocan se cierran (a menos de una
+//! tolerancia, como HPGAPTOL), y se sabe que entidades forman cada borde
+//! (para que el sombreado las siga al cambiar).
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-use opencadcodec::EntityType;
+use opencadcodec::{EntityType, Handle};
 
 use crate::dibujo::Dibujo;
 use crate::geo::{self, Caja, Forma, P};
@@ -26,12 +29,17 @@ pub struct Contorno {
     pub islas: Vec<Anillo>,
     /// El area de la cara (sin quitar las islas).
     pub area: f64,
+    /// Las entidades que forman el borde de fuera (sin repetir).
+    pub bordes: Vec<Handle>,
+    /// Las que forman cada isla.
+    pub bordes_islas: Vec<Vec<Handle>>,
 }
 
 /// **Busca el contorno cerrado mas pequeno que encierra `p`.** Empieza
 /// mirando cerca y agranda la zona solo si hace falta: hasta que la cara
-/// cabe entera en lo mirado (asi nada de fuera puede cortarla).
-pub fn buscar(d: &Dibujo, p: P) -> Option<Contorno> {
+/// cabe entera en lo mirado (asi nada de fuera puede cortarla). Los huecos
+/// de menos de `hueco` entre extremos sueltos se cierran (0: ninguno).
+pub fn buscar(d: &Dibujo, p: P, hueco: f64) -> Option<Contorno> {
     let ind = d.indice();
     let total = ind.caja()?;
     if !geo::en_caja(&total, p) {
@@ -43,22 +51,24 @@ pub fn buscar(d: &Dibujo, p: P) -> Option<Contorno> {
         let zona = [p[0] - r, p[1] - r, p[0] + r, p[1] + r];
         let todo = geo::contiene(&zona, &total);
         let mut formas = Vec::new();
+        let mut duenos = Vec::new();
         for e in ind.en(&zona) {
-            if matches!(d.entidad(e.handle), Some(EntityType::Hatch(_))) {
+            if matches!(
+                d.entidad(e.handle),
+                Some(EntityType::Hatch(_) | EntityType::Dimension(_))
+            ) {
                 continue;
             }
-            formas.extend(
-                e.formas
-                    .iter()
-                    .filter(|f| geo::se_tocan(&f.caja(), &zona))
-                    .copied(),
-            );
+            for f in e.formas.iter().filter(|f| geo::se_tocan(&f.caja(), &zona)) {
+                formas.push(*f);
+                duenos.push(e.handle);
+            }
         }
         if formas.len() > MAX_FORMAS {
             return None;
         }
         let tol = 1e-6 * (1.0 + r);
-        match cara(&formas, p, tol) {
+        match cara(&formas, &duenos, p, tol, hueco) {
             Some((c, caja)) if todo || geo::contiene(&zona, &caja) => return Some(c),
             Some((_, caja)) => {
                 // Se sale de lo mirado: agrandar hasta cubrirla.
@@ -74,6 +84,170 @@ pub fn buscar(d: &Dibujo, p: P) -> Option<Contorno> {
         }
     }
     None
+}
+
+/// **El contorno que encierra `p` hecho solo con estas formas** (cada una
+/// con la entidad de la que sale): para volver a hacer un sombreado con sus
+/// bordes de siempre, sin mirar lo demas del dibujo.
+pub fn de_formas(formas: &[(Forma, Handle)], p: P, hueco: f64) -> Option<Contorno> {
+    if formas.is_empty() || formas.len() > MAX_FORMAS {
+        return None;
+    }
+    let caja = formas
+        .iter()
+        .fold(geo::CAJA_VACIA, |c, (f, _)| geo::unir_cajas(c, f.caja()));
+    let lado = (caja[2] - caja[0]).max(caja[3] - caja[1]).max(0.0);
+    let (fs, ds): (Vec<Forma>, Vec<Handle>) = formas.iter().copied().unzip();
+    cara(&fs, &ds, p, 1e-6 * (1.0 + lado), hueco).map(|(c, _)| c)
+}
+
+/// Que parte del tamano del dibujo es la tolerancia de huecos por defecto.
+pub const HUECO_RELATIVO: f64 = 1e-4;
+
+/// **La tolerancia de huecos por defecto**: una diezmilesima de la diagonal
+/// de lo dibujado (5 mm en un plano de 50 m), que no se ve en pantalla.
+pub fn hueco_por_defecto(d: &Dibujo) -> f64 {
+    d.indice()
+        .caja()
+        .map_or(0.0, |c| (c[2] - c[0]).hypot(c[3] - c[1]) * HUECO_RELATIVO)
+}
+
+/// Unas cajas repartidas en celdas de un lado fijo, para saber cuales
+/// pueden tener un punto sin mirarlas todas (las muy grandes van aparte).
+struct Rejilla {
+    lado: f64,
+    celdas: HashMap<(i64, i64), Vec<usize>>,
+    grandes: Vec<usize>,
+}
+
+impl Rejilla {
+    fn de(cajas: &[Caja], lado: f64) -> Rejilla {
+        let mut r = Rejilla {
+            lado,
+            celdas: HashMap::new(),
+            grandes: Vec::new(),
+        };
+        for (k, c) in cajas.iter().enumerate() {
+            let (x0, y0) = r.celda([c[0], c[1]]);
+            let (x1, y1) = r.celda([c[2], c[3]]);
+            if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > 64 {
+                r.grandes.push(k);
+                continue;
+            }
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    r.celdas.entry((x, y)).or_default().push(k);
+                }
+            }
+        }
+        r
+    }
+
+    fn celda(&self, p: P) -> (i64, i64) {
+        (
+            (p[0] / self.lado).floor() as i64,
+            (p[1] / self.lado).floor() as i64,
+        )
+    }
+
+    /// Las cajas que pueden tener `q` (las de su celda y las grandes).
+    fn en(&self, q: P, mut f: impl FnMut(usize)) {
+        if let Some(v) = self.celdas.get(&self.celda(q)) {
+            v.iter().for_each(|k| f(*k));
+        }
+        self.grandes.iter().for_each(|k| f(*k));
+    }
+}
+
+/// **Los puentes que cierran los huecos**: cada extremo suelto (que no toca
+/// nada) se une con el extremo suelto mas cercano a menos de `hueco` (los
+/// pares mas cortos primero) o, si no le queda ninguno, con lo mas cercano
+/// de otra forma.
+fn puentes(formas: &[Forma], hueco: f64, tol: f64) -> Vec<Forma> {
+    let cajas: Vec<Caja> = formas
+        .iter()
+        .map(|f| geo::ensanchar(f.caja(), hueco.max(tol)))
+        .collect();
+    let total = cajas
+        .iter()
+        .fold(geo::CAJA_VACIA, |c, k| geo::unir_cajas(c, *k));
+    let lado = (hueco * 4.0)
+        .max((total[2] - total[0]).max(total[3] - total[1]) / 256.0)
+        .max(1e-9);
+    let rej = Rejilla::de(&cajas, lado);
+    let mut sueltos: Vec<(usize, P)> = Vec::new();
+    for (i, f) in formas.iter().enumerate() {
+        let ext = f.extremos();
+        for (k, q) in ext.iter().enumerate() {
+            let cerrada = ext
+                .iter()
+                .enumerate()
+                .any(|(m, o)| m != k && geo::dist(*o, *q) <= tol);
+            if cerrada {
+                continue;
+            }
+            let mut toca = false;
+            rej.en(*q, |j| {
+                toca |= j != i && geo::en_caja(&cajas[j], *q) && formas[j].distancia(*q) <= tol;
+            });
+            if !toca {
+                sueltos.push((i, *q));
+            }
+        }
+    }
+    if sueltos.is_empty() {
+        return Vec::new();
+    }
+    // Los pares de extremos sueltos, de mas cerca a mas lejos.
+    let mut orden: Vec<usize> = (0..sueltos.len()).collect();
+    orden.sort_by(|a, b| sueltos[*a].1[0].total_cmp(&sueltos[*b].1[0]));
+    let mut pares = Vec::new();
+    for (k, &a) in orden.iter().enumerate() {
+        for &b in &orden[k + 1..] {
+            if sueltos[b].1[0] - sueltos[a].1[0] > hueco {
+                break;
+            }
+            let d = geo::dist(sueltos[a].1, sueltos[b].1);
+            if d <= hueco && d > tol {
+                pares.push((d, a, b));
+            }
+        }
+    }
+    pares.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut usado = vec![false; sueltos.len()];
+    let mut out = Vec::new();
+    for (_, a, b) in pares {
+        if usado[a] || usado[b] {
+            continue;
+        }
+        usado[a] = true;
+        usado[b] = true;
+        out.push(Forma::Segmento {
+            a: sueltos[a].1,
+            b: sueltos[b].1,
+        });
+    }
+    // Los que quedan: a lo mas cercano de otra forma.
+    for (k, (i, q)) in sueltos.iter().enumerate() {
+        if usado[k] {
+            continue;
+        }
+        let mut mejor: Option<(f64, P)> = None;
+        rej.en(*q, |j| {
+            if j == *i || !geo::en_caja(&cajas[j], *q) {
+                return;
+            }
+            let c = formas[j].cercano(*q);
+            let d = geo::dist(c, *q);
+            if d <= hueco && d > tol && mejor.is_none_or(|(m, _)| d < m) {
+                mejor = Some((d, c));
+            }
+        });
+        if let Some((_, c)) = mejor {
+            out.push(Forma::Segmento { a: *q, b: c });
+        }
+    }
+    out
 }
 
 /// Un tramo del grafo: una raya de `a` a `b` o un arco antihorario.
@@ -207,10 +381,28 @@ struct Arista {
     u: usize,
     v: usize,
     pieza: Pieza,
+    /// La forma de la que sale.
+    forma: usize,
 }
 
-/// La cara mas pequena del grafo de `formas` que encierra `p`, con su caja.
-fn cara(formas: &[Forma], p: P, tol: f64) -> Option<(Contorno, Caja)> {
+/// La cara mas pequena del grafo de `formas` (cada una de la entidad
+/// `duenos[k]`) que encierra `p`, con su caja, cerrando antes los huecos de
+/// menos de `hueco`.
+fn cara(
+    formas: &[Forma],
+    duenos: &[Handle],
+    p: P,
+    tol: f64,
+    hueco: f64,
+) -> Option<(Contorno, Caja)> {
+    let mut formas = formas.to_vec();
+    let mut duenos = duenos.to_vec();
+    if hueco > tol {
+        for f in puentes(&formas, hueco, tol) {
+            formas.push(f);
+            duenos.push(Handle::NULL);
+        }
+    }
     let n = formas.len();
     if n == 0 {
         return None;
@@ -255,7 +447,7 @@ fn cara(formas: &[Forma], p: P, tol: f64) -> Option<(Contorno, Caja)> {
     };
     let mut aristas: Vec<Arista> = Vec::new();
     let mut vistas: HashMap<(usize, usize), Vec<P>> = HashMap::new();
-    for (f, v) in formas.iter().zip(fr.iter_mut()) {
+    for (i, (f, v)) in formas.iter().zip(fr.iter_mut()).enumerate() {
         v.sort_by(|a, b| a.total_cmp(b));
         v.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
         let mut tramos: Vec<(f64, f64)> = v.windows(2).map(|w| (w[0], w[1])).collect();
@@ -280,7 +472,12 @@ fn cara(formas: &[Forma], p: P, tol: f64) -> Option<(Contorno, Caja)> {
                 continue;
             }
             vistas.entry(clave).or_default().push(medio);
-            aristas.push(Arista { u, v: w, pieza: pz });
+            aristas.push(Arista {
+                u,
+                v: w,
+                pieza: pz,
+                forma: i,
+            });
         }
     }
     // 3. Fuera las colas sueltas (los nudos de una sola arista, una y otra vez).
@@ -403,9 +600,19 @@ fn cara(formas: &[Forma], p: P, tol: f64) -> Option<(Contorno, Caja)> {
             })
             .collect()
     };
+    let bordes = |ciclo: &[usize]| -> Vec<Handle> {
+        let mut v: Vec<Handle> = Vec::new();
+        for &h in ciclo {
+            let d = duenos[aristas[h / 2].forma];
+            if !d.is_null() && !v.contains(&d) {
+                v.push(d);
+            }
+        }
+        v
+    };
     let (ciclo, pts, area, caja) = &ciclos[i];
     // Las islas: el borde de fuera (horario) de lo que hay suelto dentro.
-    let islas = ciclos
+    let de_islas: Vec<&Vec<usize>> = ciclos
         .iter()
         .filter(|c| {
             c.2 < 0.0
@@ -413,13 +620,15 @@ fn cara(formas: &[Forma], p: P, tol: f64) -> Option<(Contorno, Caja)> {
                 && !dentro(&c.1, p)
                 && c.1.iter().all(|q| dentro(pts, *q))
         })
-        .map(|c| anillo(&c.0))
+        .map(|c| &c.0)
         .collect();
     Some((
         Contorno {
             exterior: anillo(ciclo),
-            islas,
+            islas: de_islas.iter().map(|c| anillo(c)).collect(),
             area: *area,
+            bordes: bordes(ciclo),
+            bordes_islas: de_islas.iter().map(|c| bordes(c)).collect(),
         },
         *caja,
     ))
@@ -467,10 +676,72 @@ mod pruebas {
             esp::linea([0.0, -10.0], [0.0, 110.0]),
             esp::linea([100.0, -10.0], [100.0, 110.0]),
         ]);
-        let c = buscar(&d, [50.0, 50.0]).unwrap();
+        let c = buscar(&d, [50.0, 50.0], 0.0).unwrap();
         assert!((c.area - 10_000.0).abs() < 1e-6, "{}", c.area);
         assert_eq!(c.exterior.len(), 4);
-        assert!(buscar(&d, [105.0, 50.0]).is_none());
+        // Las cuatro lineas son el borde.
+        assert_eq!(c.bordes.len(), 4);
+        assert!(buscar(&d, [105.0, 50.0], 0.0).is_none());
+    }
+
+    /// Un cuadrado de 100 hecho de cuatro lineas con huecos de 2 en las
+    /// esquinas (y una que se pasa).
+    fn con_huecos() -> Dibujo {
+        dibujo(vec![
+            esp::linea([0.0, 0.0], [98.0, 0.0]),
+            esp::linea([100.0, 2.0], [100.0, 100.0]),
+            esp::linea([99.0, 101.5], [0.0, 101.5]),
+            esp::linea([0.0, 100.0], [0.0, 1.5]),
+        ])
+    }
+
+    #[test]
+    fn los_huecos_pequenos_se_cierran_y_los_grandes_no() {
+        let d = con_huecos();
+        // Sin tolerancia no hay contorno.
+        assert!(buscar(&d, [50.0, 50.0], 0.0).is_none());
+        // Con 1 tampoco: los huecos son de 1,5 a 2,8.
+        assert!(buscar(&d, [50.0, 50.0], 1.0).is_none());
+        let c = buscar(&d, [50.0, 50.0], 3.0).unwrap();
+        assert!((c.area - 10_000.0).abs() < 400.0, "{}", c.area);
+        // Los puentes no son entidades: el borde son las cuatro lineas.
+        assert_eq!(c.bordes.len(), 4);
+        // Caso negativo: fuera sigue sin haber nada.
+        assert!(buscar(&d, [150.0, 50.0], 3.0).is_none());
+    }
+
+    #[test]
+    fn un_extremo_cerca_de_una_linea_se_une_a_ella() {
+        // Una T que no llega: la vertical se queda a 1 de la horizontal.
+        let d = dibujo(vec![
+            esp::polilinea(&[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]], false),
+            esp::linea([100.0, 100.0], [0.0, 100.0]),
+            esp::linea([0.0, 100.0], [0.0, 0.0]),
+            esp::linea([50.0, 99.0], [50.0, 1.0]),
+        ]);
+        // Sin tolerancia la del medio es una cola suelta: un solo recinto.
+        let c = buscar(&d, [25.0, 50.0], 0.0).unwrap();
+        assert!((c.area - 10_000.0).abs() < 1e-6);
+        // Con tolerancia parte el cuadrado en dos.
+        let c = buscar(&d, [25.0, 50.0], 1.5).unwrap();
+        assert!((c.area - 5_000.0).abs() < 1.0, "{}", c.area);
+        let c = buscar(&d, [75.0, 50.0], 1.5).unwrap();
+        assert!((c.area - 5_000.0).abs() < 1.0, "{}", c.area);
+    }
+
+    #[test]
+    fn de_formas_solo_mira_las_suyas() {
+        let d = con_huecos();
+        let ind = d.indice();
+        let formas: Vec<(Forma, Handle)> = ind
+            .entradas
+            .iter()
+            .flat_map(|e| e.formas.iter().map(move |f| (*f, e.handle)))
+            .collect();
+        let c = de_formas(&formas, [50.0, 50.0], 3.0).unwrap();
+        assert_eq!(c.bordes.len(), 4);
+        assert!(de_formas(&formas, [50.0, 50.0], 0.0).is_none());
+        assert!(de_formas(&[], [0.0, 0.0], 1.0).is_none());
     }
 
     #[test]
@@ -482,11 +753,13 @@ mod pruebas {
                 true,
             ),
         ]);
-        let c = buscar(&d, [60.0, 0.0]).unwrap();
+        let c = buscar(&d, [60.0, 0.0], 0.0).unwrap();
         assert!((c.area - std::f64::consts::PI * 10_000.0).abs() < 1.0);
         assert_eq!(c.islas.len(), 1);
+        assert_eq!((c.bordes.len(), c.bordes_islas.len()), (1, 1));
+        assert_ne!(c.bordes, c.bordes_islas[0]);
         // Dentro de la isla, el contorno es la isla.
-        let c = buscar(&d, [0.0, 0.0]).unwrap();
+        let c = buscar(&d, [0.0, 0.0], 0.0).unwrap();
         assert!((c.area - 1600.0).abs() < 1e-6 && c.islas.is_empty());
     }
 

@@ -937,6 +937,395 @@ mod pruebas {
         assert!((t.height - 125.0).abs() < 1e-9);
     }
 
+    /// Mueve lo elegido de `a` a `b` con MOVER.
+    fn mover(s: &mut Sesion, hs: &[Handle], a: &str, b: &str) {
+        s.seleccion = hs.to_vec();
+        s.escribir("m");
+        s.escribir(a);
+        s.escribir(b);
+    }
+
+    fn la_linea(s: &Sesion) -> Handle {
+        s.dibujo
+            .doc
+            .model_space_entities()
+            .find(|e| matches!(e, EntityType::Line(_)))
+            .unwrap()
+            .common()
+            .handle
+    }
+
+    fn texto_de(s: &Sesion, k: usize) -> String {
+        texto_del_bloque(&s.dibujo, &cotas(s)[k])
+    }
+
+    /// Una linea de 0,0 a 3000,0 y su cota alineada (tomada con Enter).
+    fn linea_acotada(alineada: bool) -> Sesion {
+        let mut s = sesion();
+        s.escribir("l");
+        s.escribir("0,0");
+        s.escribir("3000,0");
+        s.escribir("");
+        s.escribir(if alineada { "dal" } else { "dli" });
+        s.escribir("0,0");
+        s.escribir("3000,0");
+        s.escribir("1500,-500");
+        s
+    }
+
+    #[test]
+    fn la_cota_sigue_a_la_linea_al_moverla_estirarla_y_girarla() {
+        let mut s = linea_acotada(true);
+        let l = la_linea(&s);
+        let asoc = crate::asociar::leer_cota(&EntityType::Dimension(cotas(&s)[0].clone()));
+        assert_eq!(asoc.len(), 2, "los dos puntos van a la linea");
+        assert!(asoc.iter().all(|a| a.de.handle() == l));
+        // Mover la linea: la cota va con ella, en el mismo paso.
+        let pasos = s.dibujo.se_puede_deshacer();
+        mover(&mut s, &[l], "0,0", "100,200");
+        let Dimension::Aligned(a) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert_eq!((a.first_point.x, a.first_point.y), (100.0, 200.0));
+        assert_eq!((a.second_point.x, a.second_point.y), (3100.0, 200.0));
+        // La linea de cota a la misma distancia.
+        assert!((a.definition_point.y - (200.0 - 500.0)).abs() < 1e-6);
+        assert!(pasos);
+        // Las piezas del bloque tambien se movieron.
+        let piezas = piezas(&s.dibujo, &cotas(&s)[0]);
+        let caja = piezas
+            .iter()
+            .flat_map(crate::formas::formas)
+            .fold(crate::geo::CAJA_VACIA, |c, f| {
+                crate::geo::unir_cajas(c, f.caja())
+            });
+        // (antes, todo por debajo de -100; ahora la extension llega a 200)
+        assert!(caja[3] > 0.0 && caja[2] > 3200.0, "{caja:?}");
+        // Estirar un extremo con un pinzamiento: cambia la medida y el texto.
+        s.seleccion = vec![l];
+        assert!(s.tomar_pinzamiento([3100.0, 200.0], 2.0));
+        s.clic([4100.0, 200.0], 2.0);
+        assert!((cotas(&s)[0].base().actual_measurement - 4000.0).abs() < 1e-6);
+        assert_eq!(texto_de(&s, 0), "4000");
+        // Girar la linea: la alineada gira con ella.
+        s.seleccion = vec![l];
+        s.escribir("gi");
+        s.escribir("100,200");
+        s.escribir("90");
+        let Dimension::Aligned(a) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert!(
+            (a.second_point.x - 100.0).abs() < 1e-6 && (a.second_point.y - 4200.0).abs() < 1e-6
+        );
+        assert!((a.base.actual_measurement - 4000.0).abs() < 1e-6);
+        // Deshacer de una vez linea y cota.
+        s.escribir("u");
+        let Dimension::Aligned(a) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert!((a.second_point.x - 4100.0).abs() < 1e-6);
+        s.escribir("u");
+        assert_eq!(texto_de(&s, 0), "3000");
+        s.escribir("u");
+        let Dimension::Aligned(a) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert_eq!(a.first_point.x, 0.0);
+        assert_eq!(texto_de(&s, 0), "3000");
+    }
+
+    #[test]
+    fn la_lineal_estirada_deja_la_linea_de_cota_donde_estaba() {
+        let mut s = linea_acotada(false);
+        let l = la_linea(&s);
+        s.seleccion = vec![l];
+        assert!(s.tomar_pinzamiento([3000.0, 0.0], 2.0));
+        s.clic([3000.0, 800.0], 2.0);
+        let Dimension::Linear(d) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert_eq!(d.rotation, 0.0);
+        assert!((d.base.actual_measurement - 3000.0).abs() < 1e-6);
+        assert!((d.definition_point.y + 500.0).abs() < 1e-6);
+        assert_eq!((d.second_point.x, d.second_point.y), (3000.0, 800.0));
+    }
+
+    #[test]
+    fn borrar_lo_medido_deja_la_cota_sin_asociar_y_deshacer_la_devuelve() {
+        let mut s = linea_acotada(true);
+        let l = la_linea(&s);
+        s.seleccion = vec![l];
+        s.escribir("borrar");
+        assert!(s.dibujo.entidad(l).is_none());
+        let v = cotas(&s);
+        assert_eq!(v.len(), 1, "la cota se queda");
+        let e = EntityType::Dimension(v[0].clone());
+        assert!(crate::asociar::leer_cota(&e).is_empty());
+        assert!((v[0].base().actual_measurement - 3000.0).abs() < 1e-6);
+        s.escribir("u");
+        let e = EntityType::Dimension(cotas(&s)[0].clone());
+        assert_eq!(crate::asociar::leer_cota(&e).len(), 2);
+        // Y vuelve a seguir a la linea.
+        mover(&mut s, &[l], "0,0", "0,1000");
+        assert!((cotas(&s)[0].definition_point().y - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mover_la_cota_sola_la_suelta_y_rehace_su_bloque() {
+        let mut s = linea_acotada(true);
+        let l = la_linea(&s);
+        let h = s
+            .dibujo
+            .doc
+            .model_space_entities()
+            .find(|e| matches!(e, EntityType::Dimension(_)))
+            .unwrap()
+            .common()
+            .handle;
+        mover(&mut s, &[h], "0,0", "0,-1000");
+        let e = s.dibujo.entidad(h).unwrap().clone();
+        assert!(crate::asociar::leer_cota(&e).is_empty());
+        // Su bloque se movio con ella.
+        let p = piezas(&s.dibujo, &cotas(&s)[0]);
+        let caja = p
+            .iter()
+            .flat_map(crate::formas::formas)
+            .fold(crate::geo::CAJA_VACIA, |c, f| {
+                crate::geo::unir_cajas(c, f.caja())
+            });
+        assert!(caja[3] < -900.0, "{caja:?}");
+        // Mover la linea ya no la mueve (caso negativo).
+        mover(&mut s, &[l], "0,0", "0,5000");
+        assert!((cotas(&s)[0].definition_point().y + 1500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn la_copia_de_una_cota_no_sigue_al_original() {
+        let mut s = linea_acotada(true);
+        s.elegir_todo();
+        s.escribir("co");
+        s.escribir("0,0");
+        s.escribir("0,5000");
+        s.escribir("");
+        let v = cotas(&s);
+        assert_eq!(v.len(), 2);
+        let asociadas = v
+            .iter()
+            .filter(|d| !crate::asociar::leer_cota(&EntityType::Dimension((*d).clone())).is_empty())
+            .count();
+        assert_eq!(asociadas, 1, "solo la original");
+        // Mover la linea original no mueve la copia.
+        let l = la_linea(&s);
+        mover(&mut s, &[l], "0,0", "100,0");
+        let xs: Vec<f64> = cotas(&s).iter().map(|d| d.definition_point().x).collect();
+        assert!(xs.contains(&3100.0) && xs.contains(&3000.0), "{xs:?}");
+    }
+
+    #[test]
+    fn una_cota_de_puntos_sueltos_no_se_asocia() {
+        let mut s = sesion();
+        s.escribir("dli");
+        s.escribir("0,0");
+        s.escribir("1000,0");
+        s.escribir("500,-500");
+        let e = EntityType::Dimension(cotas(&s)[0].clone());
+        assert!(crate::asociar::leer_cota(&e).is_empty());
+    }
+
+    #[test]
+    fn radio_y_angular_siguen_a_su_circulo_y_sus_lineas() {
+        let mut s = sesion();
+        s.escribir("c");
+        s.escribir("0,0");
+        s.escribir("1000");
+        s.escribir("dra");
+        s.clic([1000.0, 0.0], 10.0);
+        s.escribir("300,300");
+        let c = s
+            .dibujo
+            .doc
+            .model_space_entities()
+            .find(|e| matches!(e, EntityType::Circle(_)))
+            .unwrap()
+            .common()
+            .handle;
+        // Escalar el circulo al doble desde su centro.
+        s.seleccion = vec![c];
+        s.escribir("es");
+        s.escribir("0,0");
+        s.escribir("2");
+        assert!((cotas(&s)[0].base().actual_measurement - 2000.0).abs() < 1e-6);
+        assert_eq!(texto_de(&s, 0), "R2000");
+        // Moverlo con un pinzamiento del centro.
+        mover(&mut s, &[c], "0,0", "500,0");
+        let Dimension::Radius(r) = &cotas(&s)[0] else {
+            panic!()
+        };
+        assert_eq!((r.angle_vertex.x, r.angle_vertex.y), (500.0, 0.0));
+
+        let mut s = sesion();
+        for (a, b) in [("0,0", "2000,0"), ("0,0", "2000,2000")] {
+            s.escribir("l");
+            s.escribir(a);
+            s.escribir(b);
+            s.escribir("");
+        }
+        s.escribir("dan");
+        s.clic([1000.0, 0.0], 5.0);
+        s.clic([1000.0, 1000.0], 5.0);
+        s.escribir("1500,300");
+        let diagonal = s
+            .dibujo
+            .doc
+            .model_space_entities()
+            .filter(|e| matches!(e, EntityType::Line(_)))
+            .nth(1)
+            .unwrap()
+            .common()
+            .handle;
+        // Girar la diagonal 15 grados mas: el angulo pasa a 60.
+        s.seleccion = vec![diagonal];
+        s.escribir("gi");
+        s.escribir("0,0");
+        s.escribir("15");
+        let a = &cotas(&s)[0];
+        assert!(
+            (a.base().actual_measurement.to_degrees() - 60.0).abs() < 1e-6,
+            "{}",
+            a.base().actual_measurement.to_degrees()
+        );
+        assert_eq!(texto_de(&s, 0), "60%%d");
+    }
+
+    #[test]
+    fn deshacer_una_cota_quita_su_bloque_y_rehacer_lo_devuelve() {
+        let mut s = linea_acotada(true);
+        let nombre = cotas(&s)[0].base().block_name.clone();
+        let n = piezas(&s.dibujo, &cotas(&s)[0]).len();
+        assert!(s.dibujo.doc.block_records.contains(&nombre));
+        s.escribir("u");
+        assert!(cotas(&s).is_empty());
+        assert!(
+            !s.dibujo.doc.block_records.contains(&nombre),
+            "sin *D huerfano"
+        );
+        s.escribir("redo");
+        assert_eq!(cotas(&s).len(), 1);
+        assert!(s.dibujo.doc.block_records.contains(&nombre));
+        assert_eq!(piezas(&s.dibujo, &cotas(&s)[0]).len(), n);
+        // Una cota nueva tras deshacer reusa el nombre sin chocar.
+        s.escribir("u");
+        s.escribir("dli");
+        s.escribir("0,0");
+        s.escribir("1000,0");
+        s.escribir("500,-500");
+        assert_eq!(cotas(&s).len(), 1);
+        assert!(!piezas(&s.dibujo, &cotas(&s)[0]).is_empty());
+    }
+
+    #[test]
+    fn radio_y_angular_con_flechas_y_estilos_hijos() {
+        let mut s = sesion();
+        s.escribir("c");
+        s.escribir("0,0");
+        s.escribir("1000");
+        s.escribir("dra");
+        s.clic([1000.0, 0.0], 10.0);
+        s.escribir("300,300");
+        let doc = &s.dibujo.doc;
+        for n in cb::HIJOS {
+            let e = doc.dim_styles.get(&cb::nombre_hijo(n)).expect("el hijo");
+            assert_eq!(e.dimtsz, 0.0);
+        }
+        assert!(doc.dim_styles.get(cb::ESTILO).unwrap().dimtsz > 0.0);
+        let r = &cotas(&s)[0];
+        let m = cb::medidas_de(doc, r, cb::Medidas::para(1.0, 0));
+        assert_eq!(m.marca, 0.0);
+        // Y la cota lo dice ella misma (DSTYLE con DIMTSZ 0).
+        let acad = r.base().common.extended_data.get_record("ACAD").unwrap();
+        assert!(
+            acad.values
+                .iter()
+                .any(|v| matches!(v, opencadcodec::xdata::XDataValue::Integer16(142)))
+        );
+        // La lineal sigue con marcas y sin DSTYLE.
+        s.escribir("dli");
+        s.escribir("0,0");
+        s.escribir("3000,0");
+        s.escribir("0,-500");
+        let l = &cotas(&s)[1];
+        let m = cb::medidas_de(&s.dibujo.doc, l, cb::Medidas::para(1.0, 0));
+        assert!(m.marca > 0.0);
+        assert!(l.base().common.extended_data.get_record("ACAD").is_none());
+        // La escala cambia tambien la de los hijos.
+        s.escribir("ec");
+        s.escribir("20");
+        for n in cb::HIJOS {
+            let e = s.dibujo.doc.dim_styles.get(&cb::nombre_hijo(n)).unwrap();
+            assert_eq!(e.dimscale, 20.0);
+        }
+    }
+
+    #[test]
+    fn la_asociacion_y_los_estilos_vuelven_en_dwg_y_dxf_y_siguen_valiendo() {
+        let mut s = linea_acotada(true);
+        s.escribir("c");
+        s.escribir("5000,0");
+        s.escribir("1000");
+        s.escribir("ddi");
+        s.clic([6000.0, 0.0], 10.0);
+        s.escribir("7000,500");
+        let dir = std::env::temp_dir().join(format!("cad-nucleo-asoc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for ext in ["dwg", "dxf"] {
+            let ruta = dir.join(format!("asoc.{ext}"));
+            s.dibujo.guardar_como(&ruta).unwrap();
+            let mut s2 = Sesion::nueva(Dibujo::abrir(&ruta).unwrap());
+            for n in cb::HIJOS {
+                assert!(
+                    s2.dibujo.doc.dim_styles.contains(&cb::nombre_hijo(n)),
+                    "{ext}: el estilo hijo {n}"
+                );
+            }
+            let v = cotas(&s2);
+            assert_eq!(v.len(), 2, "{ext}");
+            let l = la_linea(&s2);
+            let asoc = crate::asociar::leer_cota(&EntityType::Dimension(v[0].clone()));
+            assert_eq!(asoc.len(), 2, "{ext}: la asociacion se guarda");
+            assert!(asoc.iter().all(|a| a.de.handle() == l), "{ext}");
+            let asoc = crate::asociar::leer_cota(&EntityType::Dimension(v[1].clone()));
+            assert!(
+                matches!(
+                    asoc[..],
+                    [crate::asociar::Asociacion {
+                        de: crate::asociar::Referencia::Circulo(_),
+                        ..
+                    }]
+                ),
+                "{ext}: {asoc:?}"
+            );
+            // Y sigue valiendo en lo abierto.
+            mover(&mut s2, &[l], "0,0", "0,700");
+            let Dimension::Aligned(a) = &cotas(&s2)[0] else {
+                panic!()
+            };
+            assert!((a.first_point.y - 700.0).abs() < 1e-6, "{ext}");
+            assert_eq!(texto_de(&s2, 0), "3000", "{ext}");
+            // Y otra vuelta: lo cambiado se guarda bien (sin la copia vieja).
+            let ruta2 = dir.join(format!("asoc2.{ext}"));
+            s2.dibujo.guardar_como(&ruta2).unwrap();
+            let s3 = Sesion::nueva(Dibujo::abrir(&ruta2).unwrap());
+            let v = cotas(&s3);
+            assert_eq!(
+                crate::asociar::leer_cota(&EntityType::Dimension(v[0].clone())).len(),
+                2,
+                "{ext}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn las_cotas_vuelven_en_dwg_y_dxf_con_su_bloque() {
         let mut s = sesion();
