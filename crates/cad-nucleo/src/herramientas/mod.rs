@@ -5,10 +5,12 @@ use std::sync::LazyLock;
 
 use crate::herramienta::Registro;
 
+pub mod bloques;
 pub mod cotas;
 pub mod dibujo;
 pub mod modificar;
 pub mod puntos;
+pub mod sombreado;
 pub mod textos;
 
 /// Los registros de cada modulo (una linea por modulo).
@@ -18,6 +20,8 @@ const MODULOS: &[&[Registro]] = &[
     modificar::REGISTROS,
     cotas::REGISTROS,
     textos::REGISTROS,
+    bloques::REGISTROS,
+    sombreado::REGISTROS,
 ];
 
 static CATALOGO: LazyLock<Vec<&'static Registro>> =

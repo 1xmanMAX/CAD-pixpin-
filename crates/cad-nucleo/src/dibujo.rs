@@ -823,7 +823,18 @@ impl Transaccion<'_> {
         let Some(e) = self.doc.get_entity(h).cloned() else {
             return Vec::new();
         };
-        let partes = self.doc.explode_entity(&e);
+        let partes = match &e {
+            // Un bloque se desmonta en lo que tiene su definicion, ya puesto
+            // en su sitio, y queda donde estaba el bloque (no en la definicion).
+            EntityType::Insert(i) => {
+                let mut v = crate::bloque::descomponer(self.doc, i);
+                for p in &mut v {
+                    p.common_mut().owner_handle = e.common().owner_handle;
+                }
+                v
+            }
+            _ => self.doc.explode_entity(&e),
+        };
         if partes.is_empty() {
             return Vec::new();
         }
