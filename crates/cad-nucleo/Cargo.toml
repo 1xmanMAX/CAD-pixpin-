@@ -11,3 +11,9 @@ description = "El nucleo de edicion de CAD-pixpin: ordenes, enganches, deshacer 
 # y ESCRIBE DWG y DXF, y trae mover, girar, escalar y simetria para todas las
 # entidades. Rust puro: este crate se prueba tambien fuera de Windows.
 opencadcodec = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "c9ffcac" }
+# Descomprimir los flujos de los PDF que se importan y comprimir los que se
+# exportan (`formatos::pdf`). Ya estaba en el arbol (opencadcodec, pixpin-pdf).
+flate2 = "1.1"
+# Leer los SVG que se importan (`formatos::svg`). Ya estaba en el arbol
+# (pixpin-bim). MIT o Apache-2.0, sin dependencias.
+roxmltree = "0.20"

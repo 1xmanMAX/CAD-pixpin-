@@ -59,3 +59,14 @@ SOFTWARE.
 Módulos: `crates/pixpin-render/src/icono/material.rs` y los iconos de `apps/pixpin/src/sincronizar.rs`: trazados `d` de `src/<grupo>/<nombre>/materialicons/24px.svg` del repositorio `google/material-design-icons`, los mismos `Icons.Filled.*` que usa PixPin Android.
 
 Apache License 2.0 — Copyright Google LLC. Texto completo en <https://www.apache.org/licenses/LICENSE-2.0>. Los iconos se usan sin modificar.
+
+## flate2 y roxmltree (dependencias de `cad-nucleo`)
+
+`crates/cad-nucleo/src/formatos/` usa `flate2` (comprimir y descomprimir los flujos de los PDF) y `roxmltree` (leer los SVG que se importan). Los dos ya estaban en el arbol de dependencias (opencadcodec, pixpin-pdf y pixpin-bim) y se distribuyen bajo MIT o Apache-2.0, a eleccion: <https://github.com/rust-lang/flate2-rs>, <https://github.com/RazrFalcon/roxmltree>.
+
+## Fuentes de Hershey (romans.shx)
+
+`crates/cad-nucleo/fuentes/romans.shx` (los textos exportados como rayas) es la de `crates/pixpin-cad/fuentes-shx/`, hecha por PixPin con los datos de Hershey (ver `crates/cad-nucleo/fuentes/LEEME-HERSHEY.txt`):
+
+- The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the U. S. National Bureau of Standards.
+- The format of the Font data in this distribution was originally created by James Hurt, Cognition, Inc., 900 Technology Park Drive, Billerica, MA 01821 (mit-eddie!ci-dandelion!hurt).
