@@ -1572,12 +1572,7 @@ impl Sesion {
             Id::Mover | Id::Copiar | Id::Girar | Id::Escalar | Id::Simetria
                 if p.elegidos && n >= 1 =>
             {
-                let elegidas = self.elegidas();
-                elegidas
-                    .into_iter()
-                    .take(2000)
-                    .filter_map(|(_, mut e)| self.transformar(id, &mut e, Some(c)).then_some(e))
-                    .collect()
+                self.previa_de_elegidas(id, c, &mut v)
             }
             _ => Vec::new(),
         };
@@ -1593,7 +1588,80 @@ impl Sesion {
         }
         v
     }
+
+    /// La semejanza que la previa de `id` hace con el cursor en `c` (la
+    /// misma que [`Sesion::transformar`] con cursor).
+    fn semejanza_previa(&self, id: Id, c: P) -> Option<geo::Semejanza> {
+        let b = self.paso.puntos.first().copied()?;
+        match id {
+            Id::Mover | Id::Copiar => Some(geo::Semejanza::mover(geo::restar(c, b))),
+            Id::Girar => Some(geo::Semejanza::girar(b, geo::angulo(b, c))),
+            Id::Escalar => {
+                let k = (geo::dist(b, c) / self.ajustes.alto_texto.max(geo::EPS) / 4.0).max(0.01);
+                Some(geo::Semejanza::escalar(b, k))
+            }
+            Id::Simetria => geo::Semejanza::simetria(b, c),
+            _ => None,
+        }
+    }
+
+    /// **La previa de mover, copiar, girar, escalar o la simetria** de lo
+    /// elegido: transforma las formas del indice (sin copiar entidades) y,
+    /// pasado [`FORMAS_PREVIA`], pinta solo la caja de todo lo elegido. Lo
+    /// que no esta en el indice (en una capa apagada) se copia, con tope.
+    /// Pone las formas en `v` y da las entidades que hay que desmontar.
+    fn previa_de_elegidas(&self, id: Id, c: P, v: &mut Previa) -> Vec<EntityType> {
+        let Some(s) = self.semejanza_previa(id, c) else {
+            return Vec::new();
+        };
+        let ind = self.dibujo.indice();
+        let mut sueltas = Vec::new();
+        let mut caja = geo::CAJA_VACIA;
+        let mut sobran = false;
+        for h in &self.seleccion {
+            match ind.de_handle(*h) {
+                Some(e) => {
+                    caja = geo::unir_cajas(caja, e.caja);
+                    if v.formas.len() + e.formas.len() <= FORMAS_PREVIA {
+                        v.formas.extend(e.formas.iter().map(|f| s.forma(f)));
+                    } else {
+                        sobran = true;
+                    }
+                }
+                None if sueltas.len() < SUELTAS_PREVIA => {
+                    if let Some(mut e) = self.dibujo.entidad(*h).cloned()
+                        && self.transformar(id, &mut e, Some(c))
+                    {
+                        sueltas.push(e);
+                    }
+                }
+                None => {}
+            }
+        }
+        if sobran && geo::caja_valida(&caja) {
+            let q = [
+                [caja[0], caja[1]],
+                [caja[2], caja[1]],
+                [caja[2], caja[3]],
+                [caja[0], caja[3]],
+            ];
+            for i in 0..4 {
+                v.formas.push(s.forma(&Forma::Segmento {
+                    a: q[i],
+                    b: q[(i + 1) % 4],
+                }));
+            }
+        }
+        sueltas
+    }
 }
+
+/// Cuantas formas pinta como mucho la previa de lo elegido (pasado eso, la
+/// caja de todo).
+const FORMAS_PREVIA: usize = 5000;
+
+/// Cuantas entidades que no estan en el indice copia como mucho la previa.
+const SUELTAS_PREVIA: usize = 200;
 
 #[cfg(test)]
 mod pruebas {
@@ -1807,6 +1875,85 @@ mod pruebas {
         let v = s.previa([10.0, 5.0]);
         assert_eq!(v.formas.len(), 4);
         assert_eq!(v.guias.len(), 1);
+    }
+
+    /// Las formas de la previa con el cursor en `c`, y las de hacer la orden
+    /// de verdad hasta `c` (ordenadas por su caja para compararlas).
+    fn previa_y_hecho(orden: &str, c: P) -> (Vec<Forma>, Vec<Forma>) {
+        let mut s = sesion();
+        s.dibujo.editar("x", |t| {
+            t.anadir(esp::linea([10.0, 0.0], [30.0, 5.0]));
+            t.anadir(esp::arco([20.0, 20.0], 5.0, 0.2, 2.0));
+            t.anadir(esp::circulo([40.0, 10.0], 3.0));
+        });
+        s.elegir_todo();
+        s.escribir(orden);
+        s.clic([5.0, 5.0], 0.1);
+        let previa = s.previa(c).formas;
+        s.clic(c, 0.1);
+        if orden == "si" {
+            // Sin dejar lo de antes.
+            s.escribir("S");
+        }
+        let hecho: Vec<Forma> = s
+            .dibujo
+            .doc
+            .model_space_entities()
+            .flat_map(formas::formas)
+            .collect();
+        let orden_caja = |v: &mut Vec<Forma>| {
+            v.sort_by(|a, b| {
+                let (ka, kb) = (a.caja(), b.caja());
+                ka[0].total_cmp(&kb[0]).then(ka[1].total_cmp(&kb[1]))
+            })
+        };
+        let (mut a, mut b) = (previa, hecho);
+        orden_caja(&mut a);
+        orden_caja(&mut b);
+        (a, b)
+    }
+
+    #[test]
+    fn la_previa_de_mover_girar_y_simetria_es_lo_que_queda() {
+        for orden in ["m", "gi", "si"] {
+            let (previa, hecho) = previa_y_hecho(orden, [17.0, 9.0]);
+            assert_eq!(previa.len(), hecho.len(), "{orden}");
+            for (p, h) in previa.iter().zip(&hecho) {
+                let (kp, kh) = (p.caja(), h.caja());
+                for i in 0..4 {
+                    assert!((kp[i] - kh[i]).abs() < 1e-6, "{orden}: {p:?} y {h:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn la_previa_de_mucho_elegido_pinta_la_caja() {
+        let mut s = sesion();
+        s.dibujo.editar("x", |t| {
+            for i in 0..(FORMAS_PREVIA + 10) {
+                let x = i as f64;
+                t.anadir(esp::linea([x, 0.0], [x, 10.0]));
+            }
+        });
+        s.elegir_todo();
+        s.escribir("m");
+        s.clic([0.0, 0.0], 0.1);
+        let v = s.previa([0.0, 100.0]);
+        // Las que caben y los cuatro lados de la caja de todo, movida.
+        assert_eq!(v.formas.len(), FORMAS_PREVIA + 4);
+        let caja = v
+            .formas
+            .iter()
+            .fold(geo::CAJA_VACIA, |k, f| geo::unir_cajas(k, f.caja()));
+        assert_eq!(caja, [0.0, 100.0, (FORMAS_PREVIA + 9) as f64, 110.0]);
+        // Caso negativo: sin punto base aun, no hay previa de lo elegido.
+        let mut s = sesion();
+        s.dibujo
+            .editar("x", |t| t.anadir(esp::linea([0.0, 0.0], [1.0, 0.0])));
+        s.elegir_todo();
+        s.escribir("m");
+        assert!(s.previa([5.0, 5.0]).formas.is_empty());
     }
 
     #[test]

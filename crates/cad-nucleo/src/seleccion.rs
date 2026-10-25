@@ -7,38 +7,43 @@ use opencadcodec::Handle;
 use crate::dibujo::{Entrada, Indice};
 use crate::geo::{self, Caja, P};
 
-/// Lo elegible mas cercano a `p`, a menos de `tol`.
+/// **Lo elegible mas cercano a `p`**, a menos de `tol`. Solo mira las
+/// celdas del indice alrededor de `p`.
 pub fn elegir(ind: &Indice, p: P, tol: f64) -> Option<Handle> {
     let zona = geo::ensanchar([p[0], p[1], p[0], p[1]], tol);
     let mut mejor: Option<(f64, Handle)> = None;
-    for e in ind.en(&zona) {
+    ind.en_cada(&zona, |e| {
         if e.bloqueada {
-            continue;
+            return;
         }
-        let d = distancia(e, p);
-        if d <= tol && mejor.is_none_or(|(m, _)| d < m) {
+        let tope = mejor.map_or(tol, |(m, _)| m.min(tol));
+        if let Some(d) = distancia(e, p, &zona, tope)
+            && d <= tol
+            && mejor.is_none_or(|(m, _)| d < m)
+        {
             mejor = Some((d, e.handle));
         }
-    }
+    });
     mejor.map(|(_, h)| h)
 }
 
 /// Lo que dista `p` de una entrada: de sus formas o, si no tiene (un texto),
-/// cero dentro de su caja.
-fn distancia(e: &Entrada, p: P) -> f64 {
+/// cero dentro de su caja. Las formas cuya caja no toca `zona` no se miden;
+/// `None` si ninguna queda a `tope` o menos.
+fn distancia(e: &Entrada, p: P, zona: &Caja, tope: f64) -> Option<f64> {
     if e.formas.is_empty() {
-        if geo::en_caja(&e.caja, p) {
-            return 0.0;
-        }
         let c = e.caja;
         let dx = (c[0] - p[0]).max(0.0).max(p[0] - c[2]);
         let dy = (c[1] - p[1]).max(0.0).max(p[1] - c[3]);
-        return dx.hypot(dy);
+        return Some(dx.hypot(dy));
     }
-    e.formas
-        .iter()
-        .map(|f| f.distancia(p))
-        .fold(f64::INFINITY, f64::min)
+    let mut d = f64::INFINITY;
+    for f in &e.formas {
+        if geo::se_tocan(&f.caja(), zona) {
+            d = d.min(f.distancia(p));
+        }
+    }
+    (d <= tope).then_some(d)
 }
 
 /// Si el recuadro de `a` a `b` es de captura (de derecha a izquierda).
@@ -46,7 +51,9 @@ pub fn es_captura(a: P, b: P) -> bool {
     b[0] < a[0]
 }
 
-/// **Lo elegido por un recuadro** de `a` a `b`.
+/// **Lo elegido por un recuadro** de `a` a `b`. Primero por las cajas (lo
+/// que cabe entero entra sin mas); solo en captura, y solo lo que el borde
+/// del recuadro corta, se mira forma a forma y de forma exacta.
 pub fn por_recuadro(ind: &Indice, a: P, b: P) -> Vec<Handle> {
     let caja: Caja = [
         a[0].min(b[0]),
@@ -55,17 +62,13 @@ pub fn por_recuadro(ind: &Indice, a: P, b: P) -> Vec<Handle> {
         a[1].max(b[1]),
     ];
     let captura = es_captura(a, b);
-    ind.en(&caja)
-        .into_iter()
-        .filter(|e| !e.bloqueada)
-        .filter(|e| {
-            if geo::contiene(&caja, &e.caja) {
-                return true;
-            }
-            captura && toca(e, &caja)
-        })
-        .map(|e| e.handle)
-        .collect()
+    let mut v = Vec::new();
+    ind.en_cada(&caja, |e| {
+        if !e.bloqueada && (geo::contiene(&caja, &e.caja) || (captura && toca(e, &caja))) {
+            v.push(e.handle);
+        }
+    });
+    v
 }
 
 fn toca(e: &Entrada, caja: &Caja) -> bool {
@@ -73,12 +76,8 @@ fn toca(e: &Entrada, caja: &Caja) -> bool {
         return geo::se_tocan(&e.caja, caja);
     }
     e.formas.iter().any(|f| {
-        if !geo::se_tocan(&f.caja(), caja) {
-            return false;
-        }
-        let m = f.muestras(48);
-        m.windows(2)
-            .any(|s| geo::segmento_toca_caja(s[0], s[1], caja))
+        let k = f.caja();
+        geo::se_tocan(&k, caja) && (geo::contiene(caja, &k) || f.toca_caja(caja))
     })
 }
 
@@ -86,7 +85,7 @@ fn toca(e: &Entrada, caja: &Caja) -> bool {
 mod pruebas {
     use super::*;
     use crate::Dibujo;
-    use crate::especialidad::{linea, texto};
+    use crate::especialidad::{arco, circulo, linea, texto};
 
     #[test]
     fn clic_ventana_y_captura() {
@@ -112,6 +111,31 @@ mod pruebas {
         let mut esperado = vec![a, b];
         esperado.sort();
         assert_eq!(c, esperado);
+    }
+
+    #[test]
+    fn captura_exacta_con_circulos_y_arcos() {
+        let mut d = Dibujo::nuevo();
+        let (mut c, mut a) = (Handle::NULL, Handle::NULL);
+        d.editar("x", |tr| {
+            c = tr.anadir(circulo([0.0, 0.0], 100.0)).unwrap();
+            // El cuarto de arriba a la derecha.
+            a = tr
+                .anadir(arco([300.0, 0.0], 50.0, 0.0, std::f64::consts::FRAC_PI_2))
+                .unwrap();
+        });
+        let ind = d.indice();
+        // Un recuadro dentro del circulo, sin tocar la curva: nada.
+        assert!(por_recuadro(&ind, [10.0, 10.0], [-10.0, -10.0]).is_empty());
+        // Uno que corta la curva: el circulo.
+        assert_eq!(por_recuadro(&ind, [110.0, 10.0], [90.0, -10.0]), vec![c]);
+        // Dentro de la caja del arco pero en el lado que no tiene: nada.
+        assert!(por_recuadro(&ind, [315.0, 20.0], [301.0, 1.0]).is_empty());
+        // Cruzando su trozo: el arco.
+        assert_eq!(por_recuadro(&ind, [345.0, 30.0], [330.0, 20.0]), vec![a]);
+        // Clic al lado de la curva, no en el centro.
+        assert_eq!(elegir(&ind, [0.0, 99.5], 1.0), Some(c));
+        assert_eq!(elegir(&ind, [0.0, 0.0], 1.0), None);
     }
 
     #[test]

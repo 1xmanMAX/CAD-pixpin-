@@ -369,6 +369,71 @@ impl Forma {
         }
     }
 
+    /// Los extremos sin pedir memoria (un circulo no tiene).
+    pub fn extremos_fijos(&self) -> Option<[P; 2]> {
+        match *self {
+            Forma::Segmento { a, b } => Some([a, b]),
+            Forma::Arco {
+                c,
+                r,
+                inicio,
+                barrido,
+            } => Some([polar(c, r, inicio), polar(c, r, inicio + barrido)]),
+            Forma::Circulo { .. } => None,
+        }
+    }
+
+    /// **Si la forma toca la caja** `k` (algun punto de la forma dentro o en
+    /// el borde), de forma exacta: sin muestrear.
+    pub fn toca_caja(&self, k: &Caja) -> bool {
+        match *self {
+            Forma::Segmento { a, b } => segmento_toca_caja(a, b, k),
+            Forma::Circulo { c, r } => {
+                // La curva toca la caja llena si la caja tiene puntos a menos
+                // de r del centro y puntos a mas de r.
+                let dx = (k[0] - c[0]).max(0.0).max(c[0] - k[2]);
+                let dy = (k[1] - c[1]).max(0.0).max(c[1] - k[3]);
+                let cerca = dx.hypot(dy);
+                let fx = (c[0] - k[0]).abs().max((c[0] - k[2]).abs());
+                let fy = (c[1] - k[1]).abs().max((c[1] - k[3]).abs());
+                cerca <= r && fx.hypot(fy) >= r
+            }
+            Forma::Arco {
+                c,
+                r,
+                inicio,
+                barrido,
+            } => {
+                let p0 = polar(c, r, inicio);
+                let p1 = polar(c, r, inicio + barrido);
+                if en_caja(k, p0) || en_caja(k, p1) {
+                    return true;
+                }
+                // Si no empieza ni acaba dentro, toca solo si cruza un lado.
+                let en_arco = |p: P| desde(inicio, angulo(c, p)) <= barrido;
+                let corta_x = |x: f64| {
+                    let h2 = r * r - (x - c[0]) * (x - c[0]);
+                    h2 >= 0.0 && {
+                        let h = h2.sqrt();
+                        [c[1] - h, c[1] + h]
+                            .iter()
+                            .any(|&y| y >= k[1] && y <= k[3] && en_arco([x, y]))
+                    }
+                };
+                let corta_y = |y: f64| {
+                    let h2 = r * r - (y - c[1]) * (y - c[1]);
+                    h2 >= 0.0 && {
+                        let h = h2.sqrt();
+                        [c[0] - h, c[0] + h]
+                            .iter()
+                            .any(|&x| x >= k[0] && x <= k[2] && en_arco([x, y]))
+                    }
+                };
+                corta_x(k[0]) || corta_x(k[2]) || corta_y(k[1]) || corta_y(k[3])
+            }
+        }
+    }
+
     /// Puntos repartidos por la forma (para elegir con ventana o pintar).
     pub fn muestras(&self, n: usize) -> Vec<P> {
         let n = n.max(2);
@@ -385,6 +450,112 @@ impl Forma {
             } => (0..=n)
                 .map(|k| polar(c, r, inicio + barrido * k as f64 / n as f64))
                 .collect(),
+        }
+    }
+}
+
+/// **Una semejanza del plano**: mover, girar, escalar por igual y hacer
+/// simetria, juntos. Lleva `p` a `t + k * R(giro) * E(p)`, donde `E` da la
+/// vuelta a la y si `espejo`. Asi una forma sigue siendo una forma (un arco
+/// sigue siendo un arco) y se transforma sin pasar por la entidad.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Semejanza {
+    pub t: P,
+    pub k: f64,
+    pub giro: f64,
+    pub espejo: bool,
+}
+
+impl Semejanza {
+    /// La que no hace nada.
+    pub const NADA: Semejanza = Semejanza {
+        t: [0.0, 0.0],
+        k: 1.0,
+        giro: 0.0,
+        espejo: false,
+    };
+
+    /// Mover `d`.
+    pub fn mover(d: P) -> Semejanza {
+        Semejanza {
+            t: d,
+            ..Semejanza::NADA
+        }
+    }
+
+    /// Lo que deja `c` en su sitio.
+    fn fijando(c: P, k: f64, giro: f64, espejo: bool) -> Semejanza {
+        let s = Semejanza {
+            t: [0.0, 0.0],
+            k,
+            giro,
+            espejo,
+        };
+        Semejanza {
+            t: restar(c, s.aplicar(c)),
+            ..s
+        }
+    }
+
+    /// Girar `ang` radianes (antihorario) alrededor de `c`.
+    pub fn girar(c: P, ang: f64) -> Semejanza {
+        Semejanza::fijando(c, 1.0, ang, false)
+    }
+
+    /// Escalar `k` veces desde `c` (con `k` negativo, ademas media vuelta).
+    pub fn escalar(c: P, k: f64) -> Semejanza {
+        if k < 0.0 {
+            Semejanza::fijando(c, -k, PI, false)
+        } else {
+            Semejanza::fijando(c, k, 0.0, false)
+        }
+    }
+
+    /// Simetria respecto a la recta `a`-`b` (`None` si `a` y `b` coinciden).
+    pub fn simetria(a: P, b: P) -> Option<Semejanza> {
+        if dist(a, b) < EPS {
+            return None;
+        }
+        // Reflejar en una recta de angulo phi es dar la vuelta a la y y
+        // girar 2 phi.
+        Some(Semejanza::fijando(a, 1.0, 2.0 * angulo(a, b), true))
+    }
+
+    pub fn aplicar(&self, p: P) -> P {
+        let q = if self.espejo { [p[0], -p[1]] } else { p };
+        sumar(self.t, por(rotar(q, [0.0, 0.0], self.giro), self.k))
+    }
+
+    /// La forma transformada.
+    pub fn forma(&self, f: &Forma) -> Forma {
+        match *f {
+            Forma::Segmento { a, b } => Forma::Segmento {
+                a: self.aplicar(a),
+                b: self.aplicar(b),
+            },
+            Forma::Circulo { c, r } => Forma::Circulo {
+                c: self.aplicar(c),
+                r: r * self.k,
+            },
+            Forma::Arco {
+                c,
+                r,
+                inicio,
+                barrido,
+            } => {
+                // En el espejo el angulo a pasa a -a y el arco va al reves.
+                let inicio = if self.espejo {
+                    self.giro - inicio - barrido
+                } else {
+                    self.giro + inicio
+                };
+                Forma::Arco {
+                    c: self.aplicar(c),
+                    r: r * self.k,
+                    inicio: normalizar(inicio),
+                    barrido,
+                }
+            }
         }
     }
 }
@@ -624,6 +795,102 @@ mod pruebas {
         };
         let k = f.caja();
         assert!((k[3] - 1.0).abs() < 1e-9 && (k[1]).abs() < 1e-9);
+    }
+
+    /// Compara una forma transformada con sus puntos transformados uno a uno.
+    fn igual_por_puntos(s: &Semejanza, f: &Forma) {
+        let g = s.forma(f);
+        let (a, mut b) = (f.muestras(8), g.muestras(8));
+        assert_eq!(a.len(), b.len());
+        // En el espejo un arco va al reves.
+        if s.espejo && matches!(f, Forma::Arco { .. }) {
+            b.reverse();
+        }
+        for (p, q) in a.iter().zip(&b) {
+            assert!(cerca(s.aplicar(*p), *q), "{f:?} con {s:?}: {p:?} -> {q:?}");
+        }
+    }
+
+    #[test]
+    fn semejanzas_llevan_cada_punto_a_su_sitio() {
+        let arco = Forma::Arco {
+            c: [3.0, 1.0],
+            r: 2.0,
+            inicio: 0.4,
+            barrido: 2.0,
+        };
+        let seg = Forma::Segmento {
+            a: [0.0, 0.0],
+            b: [4.0, 1.0],
+        };
+        let todas = [
+            Semejanza::mover([5.0, -2.0]),
+            Semejanza::girar([1.0, 1.0], 0.7),
+            Semejanza::escalar([2.0, 0.0], 2.5),
+            Semejanza::escalar([2.0, 0.0], -1.5),
+            Semejanza::simetria([0.0, 0.0], [1.0, 2.0]).unwrap(),
+        ];
+        for s in &todas {
+            igual_por_puntos(s, &arco);
+            igual_por_puntos(s, &seg);
+        }
+        let g = Semejanza::girar([0.0, 0.0], PI / 2.0);
+        assert!(cerca(g.aplicar([1.0, 0.0]), [0.0, 1.0]));
+        let m = Semejanza::simetria([0.0, 0.0], [1.0, 1.0]).unwrap();
+        assert!(cerca(m.aplicar([1.0, 0.0]), [0.0, 1.0]));
+        // Caso negativo: una recta de simetria sin largo no vale.
+        assert!(Semejanza::simetria([1.0, 1.0], [1.0, 1.0]).is_none());
+        let Forma::Circulo { r, .. } = Semejanza::escalar([0.0, 0.0], 3.0).forma(&Forma::Circulo {
+            c: [1.0, 1.0],
+            r: 2.0,
+        }) else {
+            panic!()
+        };
+        assert!((r - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn formas_que_tocan_una_caja_sin_muestrear() {
+        let k = [0.0, 0.0, 10.0, 10.0];
+        let circulo = |c: P, r: f64| Forma::Circulo { c, r };
+        // Corta un lado, rodea la caja, cabe dentro, queda fuera.
+        assert!(circulo([12.0, 5.0], 3.0).toca_caja(&k));
+        assert!(!circulo([5.0, 5.0], 50.0).toca_caja(&k));
+        assert!(circulo([5.0, 5.0], 2.0).toca_caja(&k));
+        assert!(!circulo([20.0, 20.0], 3.0).toca_caja(&k));
+        // Un arco que solo cruza por arriba, y el mismo circulo sin ese trozo.
+        let arriba = Forma::Arco {
+            c: [5.0, 12.0],
+            r: 3.0,
+            inicio: PI,
+            barrido: PI,
+        };
+        assert!(arriba.toca_caja(&k));
+        let abajo = Forma::Arco {
+            c: [5.0, 12.0],
+            r: 3.0,
+            inicio: 0.0,
+            barrido: PI,
+        };
+        assert!(!abajo.toca_caja(&k));
+        // Un arco grande que rodea la caja sin tocarla.
+        let grande = Forma::Arco {
+            c: [5.0, 5.0],
+            r: 40.0,
+            inicio: 0.0,
+            barrido: 3.0,
+        };
+        assert!(!grande.toca_caja(&k));
+        let s = Forma::Segmento {
+            a: [-5.0, 5.0],
+            b: [15.0, 5.0],
+        };
+        assert!(s.toca_caja(&k));
+        let s = Forma::Segmento {
+            a: [-5.0, 15.0],
+            b: [15.0, 12.0],
+        };
+        assert!(!s.toca_caja(&k));
     }
 
     #[test]

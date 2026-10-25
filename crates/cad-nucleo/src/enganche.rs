@@ -2,7 +2,7 @@
 //! el extremo, el medio, el centro o el cruce de lo dibujado; y el modo orto
 //! y el rastreo polar para ir en angulos exactos.
 
-use crate::dibujo::{Entrada, Indice};
+use crate::dibujo::Indice;
 use crate::geo::{self, Forma, P};
 
 /// A que se engancho.
@@ -93,8 +93,13 @@ pub struct Enganche {
     pub tipo: Tipo,
 }
 
+/// Cuantas formas (las mas cercanas al cursor) se cruzan entre si para la
+/// interseccion: con 48, unas mil parejas como mucho.
+const FORMAS_PARA_CORTES: usize = 48;
+
 /// **El enganche mas cercano al cursor** dentro de `radio` (unidades del
 /// dibujo). `base` es el punto anterior de la orden (para la perpendicular).
+/// Solo mira las celdas del indice alrededor del cursor.
 pub fn buscar(
     ind: &Indice,
     cursor: P,
@@ -106,17 +111,8 @@ pub fn buscar(
         return None;
     }
     let zona = geo::ensanchar([cursor[0], cursor[1], cursor[0], cursor[1]], radio);
-    let cerca: Vec<&Entrada> = ind.en(&zona);
-    let formas: Vec<&Forma> = cerca
-        .iter()
-        .flat_map(|e| e.formas.iter())
-        .filter(|f| geo::se_tocan(&f.caja(), &zona))
-        .collect();
     let mut mejor: Option<(f64, Enganche)> = None;
     let mut probar = |p: P, tipo: Tipo| {
-        if !modos.tiene(tipo) {
-            return;
-        }
         let d = geo::dist(p, cursor);
         if d > radio {
             return;
@@ -128,44 +124,96 @@ pub fn buscar(
             mejor = Some((peso, Enganche { p, tipo }));
         }
     };
-    for f in &formas {
-        for p in f.extremos() {
-            probar(p, Tipo::Extremo);
+    let cortes = modos.tiene(Tipo::Interseccion);
+    // Las que pasan a menos de `radio`, con su distancia (para los cortes).
+    let mut cerca: Vec<(f64, &Forma)> = Vec::new();
+    ind.en_cada(&zona, |e| {
+        if modos.tiene(Tipo::Insercion) {
+            for p in &e.puntos {
+                probar(*p, Tipo::Insercion);
+            }
         }
-        if let Some(m) = f.punto_medio() {
-            probar(m, Tipo::Medio);
+        for f in &e.formas {
+            if !geo::se_tocan(&f.caja(), &zona) {
+                continue;
+            }
+            probar_forma(f, cursor, radio, modos, base, &mut probar);
+            if cortes {
+                let d = f.distancia(cursor);
+                if d <= radio {
+                    cerca.push((d, f));
+                }
+            }
         }
-        if let Some(c) = f.centro() {
-            probar(c, Tipo::Centro);
+    });
+    if cortes && cerca.len() >= 2 {
+        // Solo entre las formas mas cerca del cursor: pocas.
+        if cerca.len() > FORMAS_PARA_CORTES {
+            cerca.select_nth_unstable_by(FORMAS_PARA_CORTES, |a, b| a.0.total_cmp(&b.0));
+            cerca.truncate(FORMAS_PARA_CORTES);
         }
-        for q in f.cuadrantes() {
-            probar(q, Tipo::Cuadrante);
-        }
-        if let Some(b) = base
-            && let Some(pie) = f.pie_perpendicular(b)
-            && f.contiene_punto(pie, radio * 0.01)
-        {
-            probar(pie, Tipo::Perpendicular);
-        }
-        probar(f.cercano(cursor), Tipo::Cercano);
-    }
-    for e in &cerca {
-        for p in &e.puntos {
-            probar(*p, Tipo::Insercion);
-        }
-    }
-    if modos.tiene(Tipo::Interseccion) {
-        // Solo entre formas cerca del cursor: pocas.
-        let n = formas.len().min(64);
-        for i in 0..n {
-            for j in i + 1..n {
-                for p in geo::cortes(formas[i], formas[j]) {
+        for i in 0..cerca.len() {
+            let ki = cerca[i].1.caja();
+            for j in i + 1..cerca.len() {
+                if !geo::se_tocan(&ki, &cerca[j].1.caja()) {
+                    continue;
+                }
+                for p in geo::cortes(cerca[i].1, cerca[j].1) {
                     probar(p, Tipo::Interseccion);
                 }
             }
         }
     }
     mejor.map(|(_, e)| e)
+}
+
+/// Los enganches de una forma (menos la interseccion), sin pedir memoria.
+fn probar_forma(
+    f: &Forma,
+    cursor: P,
+    radio: f64,
+    modos: Modos,
+    base: Option<P>,
+    probar: &mut impl FnMut(P, Tipo),
+) {
+    if modos.tiene(Tipo::Extremo)
+        && let Some(ps) = f.extremos_fijos()
+    {
+        for p in ps {
+            probar(p, Tipo::Extremo);
+        }
+    }
+    if modos.tiene(Tipo::Medio)
+        && let Some(m) = f.punto_medio()
+    {
+        probar(m, Tipo::Medio);
+    }
+    if modos.tiene(Tipo::Centro)
+        && let Some(c) = f.centro()
+    {
+        probar(c, Tipo::Centro);
+    }
+    if modos.tiene(Tipo::Cuadrante)
+        && let Forma::Arco { c, r, .. } | Forma::Circulo { c, r } = *f
+    {
+        for q in 0..4 {
+            let a = q as f64 * std::f64::consts::FRAC_PI_2;
+            let p = geo::polar(c, r, a);
+            if geo::dist(p, cursor) <= radio && f.contiene_punto(p, 0.0) {
+                probar(p, Tipo::Cuadrante);
+            }
+        }
+    }
+    if modos.tiene(Tipo::Perpendicular)
+        && let Some(b) = base
+        && let Some(pie) = f.pie_perpendicular(b)
+        && f.contiene_punto(pie, radio * 0.01)
+    {
+        probar(pie, Tipo::Perpendicular);
+    }
+    if modos.tiene(Tipo::Cercano) {
+        probar(f.cercano(cursor), Tipo::Cercano);
+    }
 }
 
 /// **Orto**: de `base` a `p` solo en horizontal o vertical.
