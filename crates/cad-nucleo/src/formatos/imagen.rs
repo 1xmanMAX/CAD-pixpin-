@@ -214,6 +214,54 @@ pub fn adjuntar(
     Ok(h)
 }
 
+/// **Una imagen del dibujo, lista para pintar**: su fichero (ya resuelto
+/// junto al plano si la ruta es relativa) y donde caen sus esquinas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagenEnPlano {
+    pub handle: Handle,
+    pub ruta: std::path::PathBuf,
+    /// La esquina de abajo a la izquierda y los vectores de todo su ancho y
+    /// todo su alto (no por pixel).
+    pub origen: P,
+    pub ancho: P,
+    pub alto: P,
+}
+
+/// **Las imagenes que tocan `zona`**, mirando solo el indice cerca de ella.
+pub fn en_zona(d: &Dibujo, zona: &crate::geo::Caja) -> Vec<ImagenEnPlano> {
+    let ind = d.indice();
+    let mut v = Vec::new();
+    ind.en_cada(zona, |e| {
+        let Some(EntityType::RasterImage(im)) = d.entidad(e.handle) else {
+            return;
+        };
+        let Some(ruta) = ruta_de(d, im) else { return };
+        let (w, h) = (im.size.x, im.size.y);
+        v.push(ImagenEnPlano {
+            handle: e.handle,
+            ruta,
+            origen: [im.insertion_point.x, im.insertion_point.y],
+            ancho: [im.u_vector.x * w, im.u_vector.y * w],
+            alto: [im.v_vector.x * h, im.v_vector.y * h],
+        });
+    });
+    v
+}
+
+/// El fichero de una imagen: el de su definicion, relativo al plano si no
+/// es absoluto.
+fn ruta_de(d: &Dibujo, im: &RasterImage) -> Option<std::path::PathBuf> {
+    let ObjectType::ImageDefinition(def) = d.doc.objects.get(&im.definition_handle?)? else {
+        return None;
+    };
+    let r = std::path::PathBuf::from(def.file_name.replace('\\', "/"));
+    if r.is_absolute() || r.exists() {
+        return Some(r);
+    }
+    let junto = d.ruta.as_ref()?.parent()?.join(&r);
+    Some(junto)
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;

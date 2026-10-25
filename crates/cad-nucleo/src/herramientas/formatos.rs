@@ -835,10 +835,6 @@ impl Imagen {
                     self.pixeles.0,
                     self.pixeles.1
                 ));
-                cx.decir(
-                    "Se guarda en DWG y DXF como IMAGE; el visor de CAD-pixpin aun no la pinta \
-                     (se ve su marco al elegirla)",
-                );
             }
             Err(e) => cx.decir(format!("No se pudo adjuntar la imagen: {e}")),
         }
@@ -886,7 +882,9 @@ impl Herramienta for Imagen {
             return Flujo::NoEntiende;
         }
         let ruta = ruta_de(t);
-        let ruta = std::fs::canonicalize(&ruta).unwrap_or(ruta);
+        let ruta = std::fs::canonicalize(&ruta)
+            .map(sin_prefijo_largo)
+            .unwrap_or(ruta);
         match imagen::tamano_de(&ruta) {
             Ok(px) => {
                 self.ruta = ruta;
@@ -1277,3 +1275,39 @@ impl Herramienta for EscalaRef {
 
 #[cfg(test)]
 mod pruebas;
+
+/// Quita el `\\?\` que pone `canonicalize` en Windows: AutoCAD y los demas
+/// programas no entienden esa forma de la ruta.
+fn sin_prefijo_largo(r: std::path::PathBuf) -> std::path::PathBuf {
+    let t = r.to_string_lossy();
+    match t.strip_prefix(r"\\?\UNC\") {
+        Some(resto) => std::path::PathBuf::from(format!(r"\\{resto}")),
+        None => match t.strip_prefix(r"\\?\") {
+            Some(resto) => std::path::PathBuf::from(resto),
+            None => r,
+        },
+    }
+}
+
+#[cfg(test)]
+mod pruebas_ruta {
+    use super::sin_prefijo_largo;
+    use std::path::PathBuf;
+
+    #[test]
+    fn rutas_sin_el_prefijo_largo_de_windows() {
+        assert_eq!(
+            sin_prefijo_largo(PathBuf::from(r"\\?\C:\a\b.png")),
+            PathBuf::from(r"C:\a\b.png")
+        );
+        assert_eq!(
+            sin_prefijo_largo(PathBuf::from(r"\\?\UNC\srv\x\b.png")),
+            PathBuf::from(r"\\srv\x\b.png")
+        );
+        // Caso negativo: una ruta normal no cambia.
+        assert_eq!(
+            sin_prefijo_largo(PathBuf::from("/tmp/b.png")),
+            PathBuf::from("/tmp/b.png")
+        );
+    }
+}

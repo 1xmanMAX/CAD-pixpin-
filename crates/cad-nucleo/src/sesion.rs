@@ -571,6 +571,9 @@ impl Sesion {
             }
             return;
         };
+        if self.juntando() && self.palabra_de_seleccion(texto) {
+            return;
+        }
         if self.herr.is_some() && !self.juntando() {
             self.escribir_a_herr(texto);
             return;
@@ -627,6 +630,54 @@ impl Sesion {
             Some(f) => self.tras(f),
             None => {}
         }
+    }
+
+    /// **Las palabras de AutoCAD al designar objetos**: `TODO` (`ALL`), lo
+    /// elegido en la orden anterior (`P`, `PREVIO`) y lo ultimo dibujado (`U`,
+    /// `ULTIMO`, `L`). Dice si era una de ellas.
+    fn palabra_de_seleccion(&mut self, texto: &str) -> bool {
+        let t = ordenes::sin_tildes(texto.trim()).to_uppercase();
+        let nuevos: Vec<Handle> = match t.as_str() {
+            "TODO" | "ALL" | "TO" => self
+                .dibujo
+                .indice()
+                .entradas
+                .iter()
+                .filter(|e| !e.bloqueada)
+                .map(|e| e.handle)
+                .collect(),
+            "P" | "PREVIO" | "PREVIOUS" => self
+                .memoria
+                .seleccion_previa
+                .iter()
+                .copied()
+                .filter(|h| self.dibujo.entidad(*h).is_some())
+                .collect(),
+            "U" | "ULTIMO" | "L" | "LAST" => self
+                .dibujo
+                .indice()
+                .entradas
+                .iter()
+                .filter(|e| !e.bloqueada)
+                .map(|e| e.handle)
+                .max()
+                .into_iter()
+                .collect(),
+            _ => return false,
+        };
+        let mut ya: std::collections::HashSet<Handle> = self.seleccion.iter().copied().collect();
+        let mut n = 0;
+        for h in nuevos {
+            if ya.insert(h) {
+                self.seleccion.push(h);
+                n += 1;
+            }
+        }
+        self.decir(format!(
+            "{n} encontrados, {} en total",
+            self.seleccion.len()
+        ));
+        true
     }
 
     /// **Un clic en el dibujo** (ya ajustado con [`Sesion::ajustar`]). `tol` es
@@ -2027,6 +2078,31 @@ mod pruebas {
         assert_eq!(v.formas[0].caja(), [0.0, 10.0, 100.0, 10.0]);
         s.clic([50.0, 20.0], 1.0);
         assert_eq!(cuantas(&s), 2);
+    }
+
+    #[test]
+    fn todo_previo_y_ultimo_al_designar() {
+        let mut s = sesion();
+        for (a, b) in [("0,0", "10,0"), ("0,5", "10,5"), ("0,9", "10,9")] {
+            s.escribir("l");
+            s.escribir(a);
+            s.escribir(b);
+            s.escribir("");
+        }
+        s.escribir("m");
+        s.escribir("todo");
+        assert_eq!(s.seleccion.len(), 3);
+        s.escape();
+        s.escape();
+        s.escribir("m");
+        s.escribir("u");
+        assert_eq!(s.seleccion.len(), 1);
+        // Caso negativo: una palabra que no es de seleccion no elige nada.
+        s.escape();
+        s.escape();
+        s.escribir("m");
+        s.escribir("nada");
+        assert!(s.seleccion.is_empty());
     }
 
     #[test]

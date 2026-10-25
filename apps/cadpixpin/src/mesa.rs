@@ -107,6 +107,8 @@ pub struct Mesa {
     /// de pintar, que se lleva el plano mientras tanto).
     pub hay_plano: bool,
     pub caja_plano: Option<[f64; 4]>,
+    /// Las imagenes del plano ya leidas (el visor no las dibuja).
+    imagenes: crate::imagenes::Imagenes,
     /// Las vistas de antes (ZOOM Previo), la mas reciente al final.
     vistas: Vec<Camara>,
     /// Cuando giro la rueda por ultima vez (un giro seguido es una sola vista).
@@ -188,6 +190,7 @@ impl Mesa {
             enganche: None,
             hay_plano: false,
             caja_plano: None,
+            imagenes: Default::default(),
             vistas: Vec::new(),
             ultima_rueda: None,
             historial_alto: false,
@@ -863,6 +866,29 @@ impl Mesa {
 
     /// Lo elegido que se ve en `vista`: lo mayor primero y, con mucho
     /// elegido (Ctrl+A), hasta un tope y un recuadro de todo.
+    /// **Las imagenes del plano** que se ven, en la zona de dibujo (debajo de
+    /// todo lo demas que se pinta encima).
+    pub fn pintar_imagenes(
+        &mut self,
+        p: &Pintor,
+        motor: &pixpin_render::MotorRender,
+        w: f32,
+        h: f32,
+        e: f32,
+    ) {
+        let d = disposicion(w, h, e).dibujo;
+        let vista = crate::plano::caja_de_camara(&self.camara, w as u32, h as u32);
+        let lista = cad_nucleo::formatos::imagen::en_zona(&self.sesion.dibujo, &vista);
+        if lista.is_empty() {
+            return;
+        }
+        let (wd, hd) = (w as f64, h as f64);
+        let camara = self.camara;
+        let a_pantalla = |q: P| camara.pantalla(q, wd, hd);
+        let imagenes = &mut self.imagenes;
+        p.con_recorte(d, |p| imagenes.pintar(p, motor, &lista, &a_pantalla));
+    }
+
     /// **Lo recien dibujado que aun no esta en la tarjeta**: mientras su cubo
     /// se vuelve a convertir en otro hilo, se pinta aqui con el color de su
     /// capa. Sin esto, lo ultimo que se dibujo desaparecia un par de
@@ -2367,6 +2393,9 @@ fn nombre_de_tipo(e: &EntityType) -> &'static str {
         EntityType::Solid(_) => "Sólido 2D",
         EntityType::Spline(_) => "Spline",
         EntityType::Ellipse(_) => "Elipse",
+        EntityType::RasterImage(_) => "Imagen",
+        EntityType::Mesh(_) | EntityType::PolyfaceMesh(_) => "Malla 3D",
+        EntityType::Face3D(_) => "Cara 3D",
         _ => "Objeto",
     }
 }

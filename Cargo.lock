@@ -170,6 +170,7 @@ dependencies = [
  "cad-nucleo",
  "pixpin-bim",
  "pixpin-cad",
+ "pixpin-codec",
  "pixpin-render",
  "pixpin-shell",
  "tracing",

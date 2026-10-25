@@ -1311,6 +1311,7 @@ impl App {
             }
             Pantalla::Mesa(m) => {
                 let t = Instant::now();
+                m.pintar_imagenes(p, motor, w, h, e);
                 zonas = m.pintar(p, w, h, e);
                 let ms = t.elapsed().as_millis();
                 if ms > 30 {

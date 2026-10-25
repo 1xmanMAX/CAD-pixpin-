@@ -99,6 +99,9 @@ pub fn nombre_de_tipo(e: &EntityType) -> &'static str {
         EntityType::Solid(_) => "Sólido 2D",
         EntityType::Spline(_) => "Spline",
         EntityType::Ellipse(_) => "Elipse",
+        EntityType::RasterImage(_) => "Imagen",
+        EntityType::Mesh(_) | EntityType::PolyfaceMesh(_) => "Malla 3D",
+        EntityType::Face3D(_) => "Cara 3D",
         _ => "Objeto",
     }
 }

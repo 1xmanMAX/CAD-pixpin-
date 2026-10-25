@@ -23,6 +23,8 @@ pixpin-cad = { workspace = true }
 pixpin-bim = { workspace = true }
 # Direct2D para la interfaz y lo que se pinta encima del plano.
 pixpin-render = { workspace = true }
+# Leer los PNG y JPG de las imagenes del plano (IMAGEN) para pintarlas.
+pixpin-codec = { workspace = true }
 # Las preguntas de si/no de PixPin.
 pixpin-shell = { workspace = true }
 tracing-subscriber = "0.3"

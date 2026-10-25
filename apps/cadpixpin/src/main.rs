@@ -22,6 +22,8 @@ mod documentos;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod encima;
 #[cfg(windows)]
+mod imagenes;
+#[cfg(windows)]
 mod inicio;
 // La linea de ordenes (historial y Tab), portable.
 #[cfg_attr(not(windows), allow(dead_code))]
