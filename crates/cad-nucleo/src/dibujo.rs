@@ -102,6 +102,9 @@ struct Capas<'a> {
     vistas: HashMap<&'a str, (bool, bool)>,
     /// La ultima que se miro (casi siempre la de la entidad siguiente).
     ultima: Option<(&'a str, (bool, bool))>,
+    /// Las formas de cada bloque en su sistema (se sacan una vez por indice:
+    /// un plano con mil sillas iguales no recorre el bloque mil veces).
+    bloques: HashMap<String, std::rc::Rc<Vec<Forma>>>,
 }
 
 impl<'a> Capas<'a> {
@@ -110,6 +113,7 @@ impl<'a> Capas<'a> {
             doc,
             vistas: HashMap::new(),
             ultima: None,
+            bloques: HashMap::new(),
         }
     }
 
@@ -143,7 +147,29 @@ fn entrada<'a>(capas: &mut Capas<'a>, e: &'a EntityType) -> Option<Entrada> {
     if !visible {
         return None;
     }
-    let f = formas::formas(e);
+    let f = match e {
+        // Un bloque se elige y se engancha por lo que dibuja, no solo por
+        // su punto de insercion.
+        EntityType::Insert(i) if !i.is_minsert() => {
+            let doc = capas.doc;
+            let propias = capas
+                .bloques
+                .entry(i.block_name.clone())
+                .or_insert_with(|| std::rc::Rc::new(crate::bloque::formas_de(doc, &i.block_name)))
+                .clone();
+            let (s, ins) = (i.x_scale(), formas::p2(&i.insert_point));
+            let uniforme = (s - i.y_scale()).abs() < 1e-12 && s > 0.0 && i.normal.z >= 0.0;
+            if uniforme {
+                propias
+                    .iter()
+                    .map(|f| crate::bloque::transformar(f, ins, s, i.rotation))
+                    .collect()
+            } else {
+                formas::formas(e)
+            }
+        }
+        _ => formas::formas(e),
+    };
     let caja = formas::caja(e, &f)?;
     Some(Entrada {
         handle: c.handle,

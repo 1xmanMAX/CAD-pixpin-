@@ -393,6 +393,29 @@ mod pruebas {
     }
 
     #[test]
+    fn un_bloque_se_elige_y_se_engancha_por_lo_que_dibuja() {
+        let mut s = con_bloque();
+        s.seleccion.clear();
+        // El borde derecho del rectangulo, lejos del punto de insercion.
+        s.clic([300.0, 150.0], 2.0);
+        assert_eq!(s.seleccion.len(), 1);
+        let ind = s.dibujo.indice();
+        let e = crate::enganche::buscar(
+            &ind,
+            [299.0, 199.0],
+            5.0,
+            crate::enganche::Modos::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.p, [300.0, 200.0]);
+        // Caso negativo: dentro del rectangulo, lejos de todo borde, nada.
+        s.seleccion.clear();
+        s.clic([130.0, 130.0], 2.0);
+        assert!(s.seleccion.is_empty());
+    }
+
+    #[test]
     fn bloque_cambia_lo_elegido_por_el_insert_y_se_deshace() {
         let mut s = con_bloque();
         assert_eq!(cuantas(&s), 1);
