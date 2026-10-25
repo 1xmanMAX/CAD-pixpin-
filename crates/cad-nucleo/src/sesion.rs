@@ -13,6 +13,7 @@ use crate::entrada::{self, Entrada};
 use crate::especialidad as esp;
 use crate::formas;
 use crate::geo::{self, Forma, P};
+use crate::herramienta::{Contexto, Flujo, Herramienta, Lectura};
 use crate::operaciones as op;
 use crate::ordenes::{self, Id};
 
@@ -68,16 +69,7 @@ impl Ajustes {
     }
 }
 
-/// Lo que se pinta encima del dibujo mientras se usa una orden.
-#[derive(Debug, Clone, Default)]
-pub struct Previa {
-    /// Lo que va a quedar (en el color de lo nuevo).
-    pub formas: Vec<Forma>,
-    /// Las lineas guia (de la base al cursor), discontinuas.
-    pub guias: Vec<(P, P)>,
-    /// Etiquetas junto al cursor (la distancia, el angulo…).
-    pub etiquetas: Vec<(P, String)>,
-}
+pub use crate::herramienta::Previa;
 
 /// En que paso esta la orden.
 #[derive(Debug, Clone, Default)]
@@ -105,6 +97,8 @@ pub struct Sesion {
     pub registro: Vec<String>,
     /// La direccion del ultimo tramo: escribir solo una distancia sigue por ahi.
     direccion: Option<P>,
+    /// La orden enchufable en marcha ([`crate::herramientas`]), si es una de esas.
+    herr: Option<Box<dyn Herramienta>>,
 }
 
 impl Sesion {
@@ -120,6 +114,7 @@ impl Sesion {
             pinzamiento: None,
             registro: Vec::new(),
             direccion: None,
+            herr: None,
         }
     }
 
@@ -132,6 +127,43 @@ impl Sesion {
         if self.registro.len() > 500 {
             self.registro.drain(..100);
         }
+    }
+
+    /// Le pasa algo a la herramienta en marcha con lo que puede cambiar.
+    fn con_herr(
+        &mut self,
+        f: impl FnOnce(&mut dyn Herramienta, &mut Contexto) -> Flujo,
+    ) -> Option<Flujo> {
+        let h = self.herr.as_mut()?;
+        let mut cx = Contexto {
+            dibujo: &mut self.dibujo,
+            seleccion: &mut self.seleccion,
+            ajustes: &mut self.ajustes,
+            registro: &mut self.registro,
+        };
+        Some(f(h.as_mut(), &mut cx))
+    }
+
+    /// Lo que pasa despues de que la herramienta atendio algo.
+    fn tras(&mut self, f: Flujo) {
+        if f == Flujo::Termina {
+            self.cancelar_silencioso();
+            self.limpiar_seleccion_borrada();
+        }
+    }
+
+    fn lectura(&self) -> Lectura<'_> {
+        Lectura {
+            dibujo: &self.dibujo,
+            seleccion: &self.seleccion,
+            ajustes: &self.ajustes,
+        }
+    }
+
+    /// Si la orden aun esta juntando los objetos que pide.
+    fn juntando(&self) -> bool {
+        self.activa
+            .is_some_and(|id| ordenes::de(id).con_objetos && !self.paso.elegidos)
     }
 
     fn medida(&self, d: f64) -> String {
@@ -169,11 +201,19 @@ impl Sesion {
             elegidos: o.con_objetos && !self.seleccion.is_empty(),
             ..Default::default()
         };
+        if let Id::Otra(n) = id
+            && let Some(r) = crate::herramientas::de(n)
+        {
+            self.herr = Some((r.crear)());
+        }
         if self.paso.elegidos {
             self.decir(format!("{} objetos elegidos", self.seleccion.len()));
             // Las que no piden nada mas que los objetos, de una vez.
             if matches!(id, Id::Borrar | Id::Descomponer) {
                 self.terminar_con_objetos();
+            }
+            if let Some(f) = self.con_herr(|h, cx| h.al_tener_objetos(cx)) {
+                self.tras(f);
             }
         }
     }
@@ -183,6 +223,10 @@ impl Sesion {
         if self.activa.is_some() || self.pinzamiento.is_some() {
             // Lo que va hecho de una orden de varios pasos (lineas, muro…) se queda.
             self.cerrar_pendiente();
+            self.con_herr(|h, cx| {
+                h.cancelar(cx);
+                Flujo::Termina
+            });
             self.cancelar_silencioso();
             self.decir("*Cancelar*");
         } else {
@@ -191,6 +235,7 @@ impl Sesion {
     }
 
     fn cancelar_silencioso(&mut self) {
+        self.herr = None;
         self.activa = None;
         self.paso = Paso::default();
         self.pinzamiento = None;
@@ -207,6 +252,9 @@ impl Sesion {
             return Some(p);
         }
         let id = self.activa?;
+        if let Some(h) = &self.herr {
+            return if self.juntando() { None } else { h.base() };
+        }
         match id {
             Id::Mover | Id::Copiar | Id::Girar | Id::Escalar | Id::MatrizPolar
                 if self.paso.puntos.is_empty() =>
@@ -252,6 +300,9 @@ impl Sesion {
     /// Si lo que se escriba va tal cual (un texto con espacios): entonces la
     /// barra espaciadora no es Enter.
     pub fn pide_texto(&self) -> bool {
+        if let Some(h) = &self.herr {
+            return !self.juntando() && h.pide_texto();
+        }
         self.activa == Some(Id::Texto)
             && self.paso.puntos.len() == 1
             && !self.paso.numeros.is_empty()
@@ -266,6 +317,9 @@ impl Sesion {
     pub fn pide_objetos(&self) -> bool {
         match self.activa {
             None => true,
+            Some(_) if self.herr.is_some() => {
+                self.juntando() || self.herr.as_ref().is_some_and(|h| h.pide_objeto())
+            }
             Some(id) => {
                 (ordenes::de(id).con_objetos && !self.paso.elegidos)
                     || matches!(id, Id::Recortar | Id::Alargar)
@@ -292,6 +346,9 @@ impl Sesion {
         let a = &self.ajustes;
         if ordenes::de(id).con_objetos && !p.elegidos {
             return "Designe objetos (Enter para terminar):".into();
+        }
+        if let Some(h) = &self.herr {
+            return h.indicacion(&self.lectura());
         }
         match id {
             Id::Linea => {
@@ -465,7 +522,7 @@ impl Sesion {
                     "Siguiente vertice (Enter calcula):".into()
                 }
             }
-            Id::Deshacer | Id::Rehacer => String::new(),
+            Id::Deshacer | Id::Rehacer | Id::Otra(_) => String::new(),
         }
     }
 
@@ -487,6 +544,10 @@ impl Sesion {
             }
             return;
         };
+        if self.herr.is_some() && !self.juntando() {
+            self.escribir_a_herr(texto);
+            return;
+        }
         // Lo que se pide tal cual (un texto, una lista de separaciones),
         // aunque parezca un numero o un punto.
         let tal_cual = match id {
@@ -504,6 +565,40 @@ impl Sesion {
             Entrada::Vacio => self.enter(),
             Entrada::Numero(v) => self.numero(id, v),
             Entrada::Texto(t) => self.opcion(id, &t),
+        }
+    }
+
+    /// Lo escrito, para la herramienta en marcha.
+    fn escribir_a_herr(&mut self, texto: &str) {
+        let tal_cual = self.herr.as_ref().is_some_and(|h| h.pide_texto());
+        let f = if tal_cual && !texto.trim().is_empty() {
+            let t = texto.to_string();
+            self.con_herr(|h, cx| h.texto(cx, &t))
+        } else {
+            match entrada::interpretar(texto, self.base()) {
+                Entrada::Punto(p) => {
+                    self.punto(p);
+                    return;
+                }
+                Entrada::Vacio => self.con_herr(|h, cx| h.enter(cx)),
+                Entrada::Numero(v) => match self.con_herr(|h, cx| h.numero(cx, v)) {
+                    // Un numero que no espera: una distancia desde la base.
+                    Some(Flujo::NoEntiende) => {
+                        if let Some(b) = self.base() {
+                            let dir = self.direccion.unwrap_or([1.0, 0.0]);
+                            self.punto(geo::sumar(b, geo::por(dir, v)));
+                        }
+                        return;
+                    }
+                    f => f,
+                },
+                Entrada::Texto(t) => self.con_herr(|h, cx| h.texto(cx, &t)),
+            }
+        };
+        match f {
+            Some(Flujo::NoEntiende) => self.decir(format!("Opcion no valida: «{}»", texto.trim())),
+            Some(f) => self.tras(f),
+            None => {}
         }
     }
 
@@ -572,6 +667,12 @@ impl Sesion {
             return;
         };
         let Some(h) = h else { return };
+        if self.herr.is_some() && !self.juntando() {
+            if let Some(f) = self.con_herr(|hr, cx| hr.objeto(cx, h, p)) {
+                self.tras(f);
+            }
+            return;
+        }
         match id {
             Id::Recortar => self.recortar_o_alargar(h, p, true),
             Id::Alargar => self.recortar_o_alargar(h, p, false),
@@ -606,6 +707,12 @@ impl Sesion {
     /// **Un recuadro arrastrado** de `a` a `b` (ventana o captura).
     pub fn recuadro(&mut self, a: P, b: P) {
         let hs = crate::seleccion::por_recuadro(&self.dibujo.indice(), a, b);
+        if self.herr.is_some() && !self.juntando() {
+            if let Some(f) = self.con_herr(|hr, cx| hr.recuadro(cx, hs, a, b)) {
+                self.tras(f);
+            }
+            return;
+        }
         match self.activa {
             Some(Id::Recortar) | Some(Id::Alargar) => {
                 // Con captura, todo lo que cruza el recuadro (por el punto del cruce).
@@ -678,6 +785,13 @@ impl Sesion {
             if matches!(id, Id::Borrar | Id::Descomponer) {
                 self.terminar_con_objetos();
             }
+            if let Some(f) = self.con_herr(|h, cx| h.al_tener_objetos(cx)) {
+                self.tras(f);
+            }
+            return;
+        }
+        if let Some(f) = self.con_herr(|h, cx| h.enter(cx)) {
+            self.tras(f);
             return;
         }
         match id {
@@ -871,6 +985,12 @@ impl Sesion {
             if geo::norma(d) > geo::EPS {
                 self.direccion = Some(geo::unitario(d));
             }
+        }
+        if self.herr.is_some() {
+            if let Some(f) = self.con_herr(|h, cx| h.punto(cx, p)) {
+                self.tras(f);
+            }
+            return;
         }
         self.paso.puntos.push(p);
         let n = self.paso.puntos.len();
@@ -1365,6 +1485,19 @@ impl Sesion {
             return v;
         }
         let Some(id) = self.activa else { return v };
+        if let Some(h) = &self.herr {
+            if self.juntando() {
+                return v;
+            }
+            let mut v = h.previa(&self.lectura(), c);
+            if let Some(b) = h.base() {
+                v.guias.push((b, c));
+                let ang = geo::normalizar(geo::angulo(b, c)).to_degrees();
+                v.etiquetas
+                    .push((c, format!("{}  <{ang:.1}°", self.medida(geo::dist(b, c)))));
+            }
+            return v;
+        }
         let p = &self.paso;
         let pts = &p.puntos;
         let n = pts.len();

@@ -36,6 +36,8 @@ pub enum Id {
     Area,
     Deshacer,
     Rehacer,
+    /// Una orden de [`crate::herramientas`] (por su nombre).
+    Otra(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,7 +48,20 @@ pub enum Grupo {
     Arquitectura,
     Medir,
     Edicion,
+    Bloques,
+    Vista,
 }
+
+/// Las pestanas de la cinta, en su orden.
+pub const GRUPOS: &[Grupo] = &[
+    Grupo::Dibujo,
+    Grupo::Modificar,
+    Grupo::Arquitectura,
+    Grupo::Anotar,
+    Grupo::Bloques,
+    Grupo::Medir,
+    Grupo::Vista,
+];
 
 impl Grupo {
     pub fn nombre(self) -> &'static str {
@@ -57,6 +72,8 @@ impl Grupo {
             Grupo::Arquitectura => "Arquitectura",
             Grupo::Medir => "Medir",
             Grupo::Edicion => "Edicion",
+            Grupo::Bloques => "Bloques",
+            Grupo::Vista => "Vista",
         }
     }
 }
@@ -212,7 +229,7 @@ pub const ORDENES: &[Orden] = &[
     o!(
         MatrizRect,
         "MATRIZ",
-        ["AR", "MA", "ARRAY", "ARRAYRECT"],
+        ["AR", "ARRAY", "ARRAYRECT"],
         Modificar,
         true,
         "Copias en filas y columnas"
@@ -228,7 +245,7 @@ pub const ORDENES: &[Orden] = &[
     o!(
         Borrar,
         "BORRAR",
-        ["B", "E", "ERASE", "SUPR"],
+        ["E", "ERASE", "SUPR"],
         Modificar,
         true,
         "Borrar lo elegido"
@@ -339,9 +356,15 @@ pub const ORDENES: &[Orden] = &[
     ),
 ];
 
-pub fn de(id: Id) -> &'static Orden {
+/// Las ordenes de [`crate::herramientas`], detras de las de esta lista.
+fn todas() -> impl Iterator<Item = &'static Orden> {
     ORDENES
         .iter()
+        .chain(crate::herramientas::catalogo().iter().map(|r| &r.orden))
+}
+
+pub fn de(id: Id) -> &'static Orden {
+    todas()
         .find(|o| o.id == id)
         .expect("toda orden esta en la lista")
 }
@@ -352,9 +375,7 @@ pub fn buscar(texto: &str) -> Option<&'static Orden> {
     if t.is_empty() {
         return None;
     }
-    ORDENES
-        .iter()
-        .find(|o| o.nombre == t || o.alias.contains(&t.as_str()))
+    todas().find(|o| o.nombre == t || o.alias.contains(&t.as_str()))
 }
 
 /// Las ordenes que empiezan por lo escrito (para el autocompletado).
@@ -363,10 +384,93 @@ pub fn sugerencias(texto: &str) -> Vec<&'static Orden> {
     if t.is_empty() {
         return Vec::new();
     }
-    ORDENES
-        .iter()
+    todas()
         .filter(|o| o.nombre.starts_with(&t) || o.alias.iter().any(|a| a.starts_with(&t)))
         .collect()
+}
+
+/// **Lo que sale en la pestana `g`** de la cinta, en su orden.
+pub fn de_grupo(g: Grupo) -> Vec<Id> {
+    let propias: &[Id] = match g {
+        Grupo::Dibujo => &[
+            Id::Linea,
+            Id::Polilinea,
+            Id::Rectangulo,
+            Id::Circulo,
+            Id::Arco,
+            Id::Texto,
+        ],
+        Grupo::Modificar => &[
+            Id::Mover,
+            Id::Copiar,
+            Id::Girar,
+            Id::Escalar,
+            Id::Simetria,
+            Id::Desfase,
+            Id::Recortar,
+            Id::Alargar,
+            Id::Empalme,
+            Id::Chaflan,
+            Id::MatrizRect,
+            Id::MatrizPolar,
+            Id::Descomponer,
+            Id::Borrar,
+        ],
+        Grupo::Arquitectura => &[Id::Muro, Id::Ejes, Id::Puerta, Id::Ventana],
+        Grupo::Anotar => &[Id::Cota, Id::Texto, Id::Nivel, Id::Norte, Id::Lamina],
+        Grupo::Medir => &[Id::Distancia, Id::Area],
+        Grupo::Edicion | Grupo::Bloques | Grupo::Vista => &[],
+    };
+    let mut v = propias.to_vec();
+    v.extend(
+        crate::herramientas::catalogo()
+            .iter()
+            .filter(|r| r.orden.grupo == g)
+            .map(|r| r.orden.id),
+    );
+    v
+}
+
+/// **El nombre bonito** de una orden, con sus tildes (el de la cinta).
+pub fn etiqueta(id: Id) -> &'static str {
+    match id {
+        Id::Linea => "Línea",
+        Id::Polilinea => "Polilínea",
+        Id::Rectangulo => "Rectángulo",
+        Id::Circulo => "Círculo",
+        Id::Arco => "Arco",
+        Id::Texto => "Texto",
+        Id::Mover => "Mover",
+        Id::Copiar => "Copiar",
+        Id::Girar => "Girar",
+        Id::Escalar => "Escala",
+        Id::Simetria => "Simetría",
+        Id::Desfase => "Desfase",
+        Id::Recortar => "Recortar",
+        Id::Alargar => "Alargar",
+        Id::Empalme => "Empalme",
+        Id::Chaflan => "Chaflán",
+        Id::MatrizRect => "Matriz",
+        Id::MatrizPolar => "M. polar",
+        Id::Borrar => "Borrar",
+        Id::Descomponer => "Descomponer",
+        Id::Cota => "Cota",
+        Id::Nivel => "Nivel",
+        Id::Norte => "Norte",
+        Id::Muro => "Muro",
+        Id::Ejes => "Ejes",
+        Id::Puerta => "Puerta",
+        Id::Ventana => "Ventana",
+        Id::Lamina => "Lámina",
+        Id::Distancia => "Distancia",
+        Id::Area => "Área",
+        Id::Deshacer => "Deshacer",
+        Id::Rehacer => "Rehacer",
+        Id::Otra(n) => crate::herramientas::catalogo()
+            .iter()
+            .find(|r| r.orden.nombre == n)
+            .map_or(n, |r| r.etiqueta),
+    }
 }
 
 pub fn sin_tildes(s: &str) -> String {
@@ -401,7 +505,7 @@ mod pruebas {
     #[test]
     fn ningun_alias_repetido() {
         let mut vistos = std::collections::HashSet::new();
-        for o in ORDENES {
+        for o in todas() {
             assert!(vistos.insert(o.nombre), "{}", o.nombre);
             for a in o.alias {
                 assert!(vistos.insert(a), "alias repetido {a}");

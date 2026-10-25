@@ -17,85 +17,13 @@ use crate::plano::{Camara, Plano};
 use crate::tema;
 use crate::ui::{self, Accion, Estilo, Interruptor, Zona, rect};
 
-/// Las pestanas de la cinta y lo que lleva cada una.
-pub const PESTANAS: &[(Grupo, &[Id])] = &[
-    (
-        Grupo::Dibujo,
-        &[
-            Id::Linea,
-            Id::Polilinea,
-            Id::Rectangulo,
-            Id::Circulo,
-            Id::Arco,
-            Id::Texto,
-        ],
-    ),
-    (
-        Grupo::Modificar,
-        &[
-            Id::Mover,
-            Id::Copiar,
-            Id::Girar,
-            Id::Escalar,
-            Id::Simetria,
-            Id::Desfase,
-            Id::Recortar,
-            Id::Alargar,
-            Id::Empalme,
-            Id::Chaflan,
-            Id::MatrizRect,
-            Id::MatrizPolar,
-            Id::Descomponer,
-            Id::Borrar,
-        ],
-    ),
-    (
-        Grupo::Arquitectura,
-        &[Id::Muro, Id::Ejes, Id::Puerta, Id::Ventana],
-    ),
-    (
-        Grupo::Anotar,
-        &[Id::Cota, Id::Texto, Id::Nivel, Id::Norte, Id::Lamina],
-    ),
-    (Grupo::Medir, &[Id::Distancia, Id::Area]),
-];
-
-/// El nombre bonito de una orden, con sus tildes.
-pub fn etiqueta(id: Id) -> &'static str {
-    match id {
-        Id::Linea => "Línea",
-        Id::Polilinea => "Polilínea",
-        Id::Rectangulo => "Rectángulo",
-        Id::Circulo => "Círculo",
-        Id::Arco => "Arco",
-        Id::Texto => "Texto",
-        Id::Mover => "Mover",
-        Id::Copiar => "Copiar",
-        Id::Girar => "Girar",
-        Id::Escalar => "Escala",
-        Id::Simetria => "Simetría",
-        Id::Desfase => "Desfase",
-        Id::Recortar => "Recortar",
-        Id::Alargar => "Alargar",
-        Id::Empalme => "Empalme",
-        Id::Chaflan => "Chaflán",
-        Id::MatrizRect => "Matriz",
-        Id::MatrizPolar => "M. polar",
-        Id::Borrar => "Borrar",
-        Id::Descomponer => "Descomponer",
-        Id::Cota => "Cota",
-        Id::Nivel => "Nivel",
-        Id::Norte => "Norte",
-        Id::Muro => "Muro",
-        Id::Ejes => "Ejes",
-        Id::Puerta => "Puerta",
-        Id::Ventana => "Ventana",
-        Id::Lamina => "Lámina",
-        Id::Distancia => "Distancia",
-        Id::Area => "Área",
-        Id::Deshacer => "Deshacer",
-        Id::Rehacer => "Rehacer",
-    }
+/// Las pestanas que se ensenan: las que tienen alguna orden.
+pub fn pestanas() -> Vec<Grupo> {
+    ordenes::GRUPOS
+        .iter()
+        .copied()
+        .filter(|g| !ordenes::de_grupo(*g).is_empty())
+        .collect()
 }
 
 /// Donde va cada parte, en pixeles.
@@ -574,10 +502,10 @@ impl Mesa {
             rect(x - 8.0 * e, 9.0 * e, 1.0, alto - 18.0 * e),
             tema::BORDE,
         );
-        for (g, _) in PESTANAS {
+        for g in pestanas() {
             let texto = g.nombre();
             let ancho = p.medir_texto(texto, tam).0 + 24.0 * e;
-            let estilo = if *g == self.pestana {
+            let estilo = if g == self.pestana {
                 Estilo::Elegido
             } else {
                 Estilo::Plano
@@ -590,7 +518,7 @@ impl Mesa {
                 tam,
                 estilo,
                 encima,
-                Accion::Pestana(*g),
+                Accion::Pestana(g),
                 "",
             );
             x += ancho + 2.0 * e;
@@ -602,11 +530,7 @@ impl Mesa {
             p.texto(&t, c.ancho - tw - 16.0 * e, 9.0 * e, tam, tema::TEXTO_SUAVE);
         }
         // Los botones de la pestana.
-        let ids = PESTANAS
-            .iter()
-            .find(|(g, _)| *g == self.pestana)
-            .map(|(_, v)| *v)
-            .unwrap_or(&[]);
+        let ids = ordenes::de_grupo(self.pestana);
         let mut x = 8.0 * e;
         let y = alto;
         let alto_b = tema::ALTO_BOTONES * e - 8.0 * e;
@@ -651,9 +575,9 @@ impl Mesa {
                 "Cantidad, longitud y area por capa",
             );
         }
-        for id in ids {
+        for id in &ids {
             let o = ordenes::de(*id);
-            let nombre = etiqueta(*id);
+            let nombre = ordenes::etiqueta(*id);
             let alias = o.alias.first().copied().unwrap_or("");
             let ancho = p.medir_texto(nombre, tam).0.max(44.0 * e) + 22.0 * e;
             let r = rect(x, y, ancho, alto_b);
@@ -1274,9 +1198,10 @@ mod pruebas {
 
     #[test]
     fn todas_las_ordenes_de_la_cinta_tienen_nombre() {
-        for (_, ids) in PESTANAS {
-            for id in *ids {
-                assert!(!etiqueta(*id).is_empty());
+        for g in pestanas() {
+            for id in ordenes::de_grupo(g) {
+                let id = &id;
+                assert!(!ordenes::etiqueta(*id).is_empty());
                 assert_eq!(ordenes::de(*id).id, *id);
             }
         }

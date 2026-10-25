@@ -11,6 +11,8 @@ pub mod entrada;
 pub mod especialidad;
 pub mod formas;
 pub mod geo;
+pub mod herramienta;
+pub mod herramientas;
 pub mod metrados;
 pub mod operaciones;
 pub mod ordenes;
