@@ -15,6 +15,7 @@ pub mod puntos;
 pub mod seleccionar;
 pub mod sombreado;
 pub mod textos;
+pub mod tresd;
 pub mod vista;
 
 /// Los registros de cada modulo (una linea por modulo).
@@ -30,6 +31,7 @@ const MODULOS: &[&[Registro]] = &[
     capas::REGISTROS,
     portapapeles::REGISTROS,
     seleccionar::REGISTROS,
+    tresd::REGISTROS,
 ];
 
 static CATALOGO: LazyLock<Vec<&'static Registro>> =

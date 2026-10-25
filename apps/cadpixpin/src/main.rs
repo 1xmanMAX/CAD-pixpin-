@@ -33,6 +33,8 @@ mod tema;
 mod ui;
 #[cfg(windows)]
 mod ventana;
+#[cfg(windows)]
+mod vista3d;
 
 #[cfg(windows)]
 fn main() {

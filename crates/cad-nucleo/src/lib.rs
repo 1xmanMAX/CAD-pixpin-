@@ -25,6 +25,7 @@ pub mod portapapeles;
 pub mod seleccion;
 pub mod seleccion_rapida;
 pub mod sesion;
+pub mod tresd;
 
 pub use dibujo::{Dibujo, Transaccion};
 pub use opencadcodec;
