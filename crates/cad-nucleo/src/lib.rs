@@ -5,6 +5,7 @@
 //! Rust puro sobre `opencadcodec` (OpenCADStudio): se prueba en cualquier
 //! sistema; la ventana de Windows esta en `apps/cadpixpin`.
 
+pub mod cotas_bloque;
 pub mod dibujo;
 pub mod enganche;
 pub mod entrada;

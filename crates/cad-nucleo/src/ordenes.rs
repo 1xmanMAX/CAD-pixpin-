@@ -261,7 +261,7 @@ pub const ORDENES: &[Orden] = &[
     o!(
         Cota,
         "COTA",
-        ["COT", "DAL", "DIMALIGNED"],
+        ["COT"],
         Anotar,
         false,
         "Una cota alineada con sus marcas"
