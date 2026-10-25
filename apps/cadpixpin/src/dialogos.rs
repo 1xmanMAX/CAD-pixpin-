@@ -91,15 +91,30 @@ fn guardar_con(
 ) -> Option<PathBuf> {
     // SAFETY: como en `abrir`.
     unsafe {
-        let d: IFileSaveDialog =
-            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-        d.SetFileTypes(filtros).ok()?;
-        d.SetDefaultExtension(ext).ok()?;
+        let d: IFileSaveDialog = match CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
+        {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(?e, "sin dialogo de guardar");
+                return None;
+            }
+        };
+        if let Err(e) = d.SetFileTypes(filtros) {
+            tracing::warn!(?e, "SetFileTypes");
+            return None;
+        }
+        if let Err(e) = d.SetDefaultExtension(ext) {
+            tracing::warn!(?e, "SetDefaultExtension");
+            return None;
+        }
         let nombre = HSTRING::from(sugerido);
         let _ = d.SetFileName(&nombre);
         let op = d.GetOptions().ok()?;
         d.SetOptions(op | FOS_OVERWRITEPROMPT).ok()?;
-        d.Show(Some(padre)).ok()?;
+        if let Err(e) = d.Show(Some(padre)) {
+            tracing::warn!(?e, "Show");
+            return None;
+        }
         let item = d.GetResult().ok()?;
         let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let ruta = p.to_string().ok().map(PathBuf::from);

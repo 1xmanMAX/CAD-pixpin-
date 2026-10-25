@@ -624,7 +624,9 @@ impl Mesa {
         let ajustado = cursor_dibujo.map(|(x, y)| {
             let crudo = self.a_plano(x, y, w, h);
             let radio = self.radio_enganche(e);
-            let sin = self.sesion.pide_objetos() && self.sesion.activa().is_some();
+            // Eligiendo objetos (tambien sin orden) no hay enganche que ensenar:
+            // el clic no lo usaria.
+            let sin = self.sesion.pide_objetos();
             // Si el cursor y lo demas siguen igual, el enganche de antes.
             let clave = ClaveAjuste::de(&self.sesion, crudo, radio, sin);
             let sesion = &self.sesion;
@@ -687,7 +689,13 @@ impl Mesa {
             let mut etiquetas = 0;
             if let Some((q, _)) = ajustado {
                 let previa = self.sesion.previa(q);
-                for f in &previa.formas {
+                // Solo lo que cae en la vista (con mucho elegido, la previa
+                // trae miles de formas).
+                for f in previa
+                    .formas
+                    .iter()
+                    .filter(|f| cad_nucleo::geo::se_tocan(&f.caja(), &vista))
+                {
                     trazar_forma(p, f, &a_pantalla, self.camara.px, 1.5 * e, tema::PREVIA);
                 }
                 for (a, b) in &previa.guias {
@@ -887,23 +895,29 @@ impl Mesa {
         if self.sesion.seleccion.is_empty() {
             return;
         }
-        const TOPE_FORMAS: usize = 3000;
+        // Con la previa de mover o girar en pantalla, menos: las dos juntas
+        // son lo que mas cuesta pintar con mucho elegido.
+        let tope_formas: usize = if self.sesion.activa().is_some() && !self.sesion.pide_objetos() {
+            1500
+        } else {
+            3000
+        };
         let ind = self.sesion.dibujo.indice();
         // Con mucho elegido, lo que en pantalla no llega a dos pixeles no se
         // resalta (el recuadro de todo dice que esta elegido).
-        let minimo = if self.sesion.seleccion.len() > TOPE_FORMAS {
+        let minimo = if self.sesion.seleccion.len() > tope_formas {
             self.camara.px * 2.0
         } else {
             0.0
         };
-        let (cuales, mut quedan) = self.resalte.visibles(vista, minimo, TOPE_FORMAS);
+        let (cuales, mut quedan) = self.resalte.visibles(vista, minimo, tope_formas);
         let mut trazadas = 0;
         for k in cuales {
             let Some(en) = ind.entradas.get(k as usize) else {
                 continue;
             };
             trazadas += en.formas.len().max(1);
-            if trazadas > TOPE_FORMAS {
+            if trazadas > tope_formas {
                 quedan = true;
                 break;
             }
@@ -2342,13 +2356,19 @@ fn trazar_forma(
     grosor: f32,
     color: Color,
 ) {
+    // Sin geometrias de Direct2D (crear una por arco en cada fotograma era
+    // lo caro con mucho elegido): el circulo es una elipse y el arco, rayas
+    // sueltas, que Direct2D junta.
     match *f {
         Forma::Segmento { a, b } => p.linea(a_pantalla(a), a_pantalla(b), grosor, color),
-        Forma::Arco { r, .. } | Forma::Circulo { r, .. } => {
+        Forma::Circulo { c, r } => p.anillo(a_pantalla(c), (r / px) as f32, grosor, color),
+        Forma::Arco { r, .. } => {
             // Tantos tramos como pida el tamano en pantalla.
-            let n = ((r / px).sqrt() * 4.0).clamp(12.0, 160.0) as usize;
+            let n = ((r / px).sqrt() * 4.0).clamp(4.0, 160.0) as usize;
             let pts: Vec<(f32, f32)> = f.muestras(n).into_iter().map(a_pantalla).collect();
-            p.polilinea(&pts, grosor, color);
+            for w in pts.windows(2) {
+                p.linea(w[0], w[1], grosor, color);
+            }
         }
     }
 }

@@ -225,6 +225,16 @@ impl Herramienta for EditarTexto {
         self.elegido.is_some()
     }
 
+    /// Con un solo texto o cota ya elegido (el doble clic), ese.
+    fn al_empezar(&mut self, cx: &mut Contexto) -> Flujo {
+        if let [h] = cx.seleccion.as_slice()
+            && cx.dibujo.entidad(*h).and_then(contenido).is_some()
+        {
+            self.elegido = Some(*h);
+        }
+        Flujo::Sigue
+    }
+
     fn punto(&mut self, cx: &mut Contexto, p: P) -> Flujo {
         if self.elegido.is_some() {
             return Flujo::NoEntiende;
@@ -348,6 +358,35 @@ mod pruebas {
         s.escribir("hola");
         s.escribir("");
         assert_eq!(mtextos(&s)[0].height, 180.0);
+    }
+
+    #[test]
+    fn editar_el_texto_ya_elegido_sin_volver_a_pedirlo() {
+        let mut s = sesion();
+        s.escribir("t");
+        s.escribir("0,0");
+        s.escribir("250");
+        s.escribir("Sala");
+        s.elegir_todo();
+        s.escribir("ed");
+        assert!(s.indicacion().contains("<Sala>"), "{}", s.indicacion());
+        s.escribir("Sala comedor");
+        assert!(mtextos(&s).is_empty());
+        assert!(
+            s.dibujo
+                .doc
+                .model_space_entities()
+                .any(|e| matches!(e, EntityType::Text(t) if t.value == "Sala comedor"))
+        );
+        // Con dos elegidos, lo pide.
+        s.escribir("");
+        s.escribir("t");
+        s.escribir("0,1000");
+        s.escribir("250");
+        s.escribir("Bano");
+        s.elegir_todo();
+        s.escribir("ed");
+        assert!(s.indicacion().contains("Elija"), "{}", s.indicacion());
     }
 
     #[test]

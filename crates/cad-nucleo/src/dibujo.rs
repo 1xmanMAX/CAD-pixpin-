@@ -606,6 +606,7 @@ impl Dibujo {
         let mut t = Transaccion {
             doc: &mut self.doc,
             cambios: Vec::new(),
+            apuntados: std::collections::HashSet::new(),
         };
         let r = f(&mut t);
         let mut cambios = std::mem::take(&mut t.cambios);
@@ -770,11 +771,14 @@ fn poner(doc: &mut CadDocument, h: Handle, e: Option<Arc<EntityType>>) {
 pub struct Transaccion<'a> {
     doc: &'a mut CadDocument,
     cambios: Vec<Cambio>,
+    /// Los handles ya apuntados en `cambios`: mirarlo en la lista era
+    /// cuadratico (mover o borrar 200 000 objetos tardaba 15 a 20 s).
+    apuntados: std::collections::HashSet<Handle>,
 }
 
 impl Transaccion<'_> {
     fn apuntar(&mut self, h: Handle) {
-        if !self.cambios.iter().any(|c| c.handle == h) {
+        if self.apuntados.insert(h) {
             let antes = self.doc.get_entity_arc(h);
             self.cambios.push(Cambio {
                 handle: h,
@@ -796,6 +800,7 @@ impl Transaccion<'_> {
     pub fn anadir(&mut self, mut e: EntityType) -> Option<Handle> {
         e.as_entity_mut().set_handle(Handle::NULL);
         let h = self.doc.add_entity(e).ok()?;
+        self.apuntados.insert(h);
         self.cambios.push(Cambio {
             handle: h,
             antes: None,

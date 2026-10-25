@@ -258,3 +258,38 @@ fn rendimiento_previa_de_mover_todo() {
         }
     }
 }
+
+#[test]
+#[ignore]
+fn rendimiento_mover_borrar_y_deshacer_todo() {
+    let (d, hs) = plano();
+    let mut s = Sesion::nueva(d);
+    s.elegir_todo();
+    s.escribir("m");
+    s.clic([0.0, 0.0], 1.0);
+    let t = Instant::now();
+    s.clic([100.0, 50.0], 1.0);
+    let mover = ms(t.elapsed());
+    let t = Instant::now();
+    let _ = s.dibujo.indice();
+    let indice = ms(t.elapsed());
+    let t = Instant::now();
+    s.escribir("u");
+    let _ = s.dibujo.indice();
+    let deshacer = ms(t.elapsed());
+    s.elegir_todo();
+    let t = Instant::now();
+    s.borrar_seleccion();
+    let _ = s.dibujo.indice();
+    let borrar = ms(t.elapsed());
+    println!(
+        "con {} objetos: mover {mover:.0} ms (+ indice {indice:.0} ms), deshacer {deshacer:.0} ms, borrar {borrar:.0} ms",
+        hs.len()
+    );
+    assert_eq!(s.dibujo.doc.model_space_entities().count(), 0);
+    if optimizado() {
+        assert!(mover + indice < 3000.0, "mover: {mover} + {indice} ms");
+        assert!(deshacer < 3000.0, "deshacer: {deshacer} ms");
+        assert!(borrar < 3000.0, "borrar: {borrar} ms");
+    }
+}
