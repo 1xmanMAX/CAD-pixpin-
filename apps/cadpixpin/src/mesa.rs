@@ -14,15 +14,18 @@ use cad_nucleo::geo::{Forma, P};
 use cad_nucleo::herramientas::capas;
 use cad_nucleo::herramientas::vista::PedidoVista;
 use cad_nucleo::opencadcodec::EntityType;
+use cad_nucleo::opencadcodec::{Color as ColorCad, Handle, LineWeight};
 use cad_nucleo::ordenes::{self, Grupo, Id};
+use cad_nucleo::propiedades::{self as props, Cambio, Comun, Resumen};
 use cad_nucleo::{Dibujo, Sesion, formas, metrados};
 use pixpin_render::{Color, Pintor, RectF};
 
 use crate::autoguardado;
-use crate::encima::{ClaveAjuste, Memo, Resalte};
+use crate::encima::{ClaveAjuste, Memo, MemoEleccion, Resalte};
+use crate::linea::{self, Linea};
 use crate::plano::{Camara, Plano};
 use crate::tema;
-use crate::ui::{self, Accion, Estilo, Interruptor, Zona, rect};
+use crate::ui::{self, Accion, Campo, Estilo, Interruptor, Zona, rect};
 
 /// Las pestanas que se ensenan: las que tienen alguna orden.
 pub fn pestanas() -> Vec<Grupo> {
@@ -89,8 +92,8 @@ pub struct Mesa {
     pub camara: Camara,
     pub plano: Plano,
     pub pestana: Grupo,
-    /// Lo que se va escribiendo en la linea de ordenes.
-    pub escrito: String,
+    /// Lo que se va escribiendo en la linea de ordenes, con su historial.
+    pub linea: Linea,
     /// El raton (pixeles de la ventana), si esta dentro.
     pub cursor: Option<(f32, f32)>,
     abajo: Option<Abajo>,
@@ -123,6 +126,36 @@ pub struct Mesa {
     /// [`crate::encima`]).
     resalte: Resalte,
     ajuste: Memo<ClaveAjuste, (P, Option<Enganche>)>,
+    /// El menu del boton derecho o la lista de una propiedad, si esta abierto.
+    pub emergente: Option<Emergente>,
+    /// Donde quedo pintado el emergente (para el clic y la rueda).
+    caja_emergente: Cell<Option<RectF>>,
+    /// F12: la indicacion y lo escrito junto al cursor.
+    pub entrada_dinamica: bool,
+    /// El resumen de lo elegido para el panel (se rehace si cambia).
+    resumen: MemoEleccion<Resumen>,
+    /// Lo que hay bajo el cursor (la preseleccion), con de que dependia.
+    presel: Memo<(f32, f32, u64, Camara), Option<Handle>>,
+    /// Desde cuando se llama la atencion sobre el panel de propiedades.
+    aviso_panel: Option<Instant>,
+}
+
+/// **Lo que se abre encima de todo**: el menu del boton derecho o la lista
+/// de valores de una propiedad.
+#[derive(Debug, Clone)]
+pub enum Emergente {
+    Menu {
+        x: f32,
+        y: f32,
+        items: Vec<(String, Accion)>,
+    },
+    Lista {
+        campo: Campo,
+        /// La altura de la fila del panel que la abrio.
+        y: f32,
+        /// La primera que se ve (se mueve con la rueda).
+        desde: usize,
+    },
 }
 
 impl Mesa {
@@ -147,7 +180,7 @@ impl Mesa {
             },
             plano: Plano::nuevo(),
             pestana: Grupo::Dibujo,
-            escrito: String::new(),
+            linea: Linea::default(),
             cursor: None,
             abajo: None,
             mano: None,
@@ -165,6 +198,12 @@ impl Mesa {
             autoguardado: autoguardado::Estado::nuevo(),
             resalte: Resalte::default(),
             ajuste: Memo::default(),
+            emergente: None,
+            caja_emergente: Cell::new(None),
+            entrada_dinamica: true,
+            resumen: MemoEleccion::default(),
+            presel: Memo::default(),
+            aviso_panel: None,
         }
     }
 
@@ -231,13 +270,44 @@ impl Mesa {
         self.encuadrado = true;
     }
 
+    /// **La primera vez, ver todo el plano** (en cuanto llega a la tarjeta o
+    /// no hay nada que esperar). La ventana lo llama antes de sacar los cubos
+    /// que se ven: si se hacia dentro del pintado, el primer fotograma salia
+    /// con la camara de antes y se quedaba asi hasta mover el raton.
+    pub fn encuadrar_si_falta(&mut self, w: f32, h: f32, e: f32) {
+        if !self.encuadrado && (self.hay_plano || !self.plano.esperando()) {
+            self.encuadrar(w, h, e);
+        }
+    }
+
     fn a_plano(&self, x: f32, y: f32, w: f32, h: f32) -> P {
         self.camara.plano(x as f64, y as f64, w as f64, h as f64)
     }
 
     /// Si el cursor esta sobre el plano (y se esconde la flecha).
     pub fn en_el_dibujo(&self, x: f32, y: f32, w: f32, h: f32, e: f32) -> bool {
-        ui::dentro(&self.disp(w, h, e).dibujo, x, y)
+        ui::dentro(&self.disp(w, h, e).dibujo, x, y) && !self.en_emergente(x, y)
+    }
+
+    /// Si (x, y) cae en el menu o la lista abiertos.
+    pub fn en_emergente(&self, x: f32, y: f32) -> bool {
+        self.emergente.is_some()
+            && self
+                .caja_emergente
+                .get()
+                .is_some_and(|r| ui::dentro(&r, x, y))
+    }
+
+    /// La rueda sobre una lista abierta: la mueve.
+    pub fn rueda_emergente(&mut self, pasos: f32) {
+        if let Some(Emergente::Lista { desde, .. }) = &mut self.emergente {
+            let filas = (pasos.abs() * 3.0).round().max(1.0) as usize;
+            *desde = if pasos > 0.0 {
+                desde.saturating_sub(filas)
+            } else {
+                *desde + filas
+            };
+        }
     }
 
     // ------------------------------------------------------------- raton
@@ -317,15 +387,84 @@ impl Mesa {
         self.camara = self.camara.zoom(f, x as f64, y as f64, w as f64, h as f64);
     }
 
-    /// El boton derecho: Enter (como en AutoCAD).
+    /// **El boton derecho**: Enter si hay una orden en marcha o algo escrito
+    /// (como en AutoCAD); si no, el menu con lo de siempre junto al cursor.
     pub fn derecho(&mut self) {
-        self.enter();
+        if self.emergente.take().is_some() {
+            return;
+        }
+        // Con una orden, un pinzamiento tomado (no pide objetos) o algo escrito.
+        if self.sesion.activa().is_some()
+            || !self.sesion.pide_objetos()
+            || !self.linea.escrito.is_empty()
+        {
+            self.enter();
+            return;
+        }
+        let Some((x, y)) = self.cursor else {
+            return;
+        };
+        self.abajo = None;
+        self.emergente = Some(Emergente::Menu {
+            x,
+            y,
+            items: self.items_del_menu(),
+        });
+    }
+
+    /// Lo que ofrece el menu del boton derecho ahora.
+    fn items_del_menu(&self) -> Vec<(String, Accion)> {
+        let s = &self.sesion;
+        let hay = !s.seleccion.is_empty();
+        let mut v = Vec::new();
+        if let Some(u) = s.ultima() {
+            v.push((
+                format!("Repetir {}", ordenes::de(u).nombre),
+                Accion::Repetir,
+            ));
+        }
+        if hay {
+            v.push(("Cancelar (soltar lo elegido)".into(), Accion::Cancelar));
+        }
+        if s.dibujo.se_puede_deshacer() {
+            v.push(("Deshacer".into(), Accion::Orden(Id::Deshacer)));
+        }
+        if s.dibujo.se_puede_rehacer() {
+            v.push(("Rehacer".into(), Accion::Orden(Id::Rehacer)));
+        }
+        let otra = |n: &'static str| Accion::Orden(Id::Otra(n));
+        if hay {
+            v.push((
+                "Copiar".into(),
+                otra(cad_nucleo::herramientas::portapapeles::COPIAR),
+            ));
+            v.push((
+                "Cortar".into(),
+                otra(cad_nucleo::herramientas::portapapeles::CORTAR),
+            ));
+        }
+        v.push((
+            "Pegar".into(),
+            otra(cad_nucleo::herramientas::portapapeles::PEGAR),
+        ));
+        if hay {
+            v.push(("Borrar".into(), Accion::Orden(Id::Borrar)));
+            v.push(("Mover".into(), Accion::Orden(Id::Mover)));
+            v.push(("Copiar en el dibujo".into(), Accion::Orden(Id::Copiar)));
+            v.push(("Seleccionar similares".into(), otra("SELECCIONARSIMILAR")));
+            v.push(("Propiedades".into(), Accion::VerPropiedades));
+        }
+        v.push(("Ver todo".into(), Accion::Encuadre));
+        v
     }
 
     // ----------------------------------------------------------- teclado
 
     pub fn enter(&mut self) {
-        let t = std::mem::take(&mut self.escrito);
+        self.emergente = None;
+        // Una orden si no hay ninguna en marcha ni un pinzamiento tomado.
+        let es_orden = self.sesion.activa().is_none() && self.sesion.pide_objetos();
+        let t = self.linea.tomar(es_orden);
         self.sesion.escribir(&t);
     }
 
@@ -333,20 +472,90 @@ impl Mesa {
         match c {
             '\r' | '\n' => self.enter(),
             ' ' if !self.sesion.pide_texto() => self.enter(),
-            '\u{8}' => {
-                self.escrito.pop();
-            }
-            c if !c.is_control() => self.escrito.push(c),
+            '\u{8}' => self.linea.atras(),
+            c if !c.is_control() => self.linea.poner(c),
             _ => {}
         }
     }
 
+    /// **Esc**: cierra lo abierto, borra lo escrito, cancela la orden y, a
+    /// la siguiente, suelta lo elegido (como en AutoCAD).
     pub fn escape(&mut self) {
-        if !self.escrito.is_empty() {
-            self.escrito.clear();
+        if self.emergente.take().is_some() {
+            return;
+        }
+        self.abajo = None;
+        if !self.linea.escrito.is_empty() {
+            self.linea.limpiar();
         } else {
             self.sesion.escape();
         }
+    }
+
+    /// Flecha arriba o abajo: el historial de lo escrito.
+    pub fn historial(&mut self, arriba: bool) {
+        let solo_ordenes = self.sesion.activa().is_none() && self.sesion.pide_objetos();
+        if arriba {
+            self.linea.subir(solo_ordenes);
+        } else {
+            self.linea.bajar(solo_ordenes);
+        }
+    }
+
+    /// **Tab**: completa la orden (sin orden en marcha) o la opcion de la
+    /// orden; con Mayus, hacia atras.
+    pub fn tabulador(&mut self, atras: bool) {
+        if self.sesion.activa().is_none() {
+            self.linea.completar(atras, linea::ordenes_para);
+        } else {
+            let ind = self.sesion.indicacion();
+            self.linea
+                .completar(atras, |t| linea::opciones_para(&ind, t));
+        }
+    }
+
+    /// **Cambia una propiedad** de todo lo elegido (desde el panel).
+    pub fn cambiar_propiedad(&mut self, c: &Cambio) {
+        let s = &mut self.sesion;
+        if s.seleccion.is_empty() {
+            return;
+        }
+        let n = props::aplicar(&mut s.dibujo, &s.seleccion, c);
+        let que = match c {
+            Cambio::Capa(n) => format!("capa {n}"),
+            Cambio::Color(k) => format!("color {}", props::texto_de_color(k)),
+            Cambio::TipoLinea(t) => format!("tipo de linea {}", props::texto_de_tipo_linea(t)),
+            Cambio::Grosor(g) => format!("grosor {}", props::texto_de_grosor(g)),
+        };
+        let objetos = if n == 1 { "objeto" } else { "objetos" };
+        s.avisar(format!("{n} {objetos} con {que}"));
+    }
+
+    /// Repetir la ultima orden.
+    pub fn repetir(&mut self) {
+        if let Some(u) = self.sesion.ultima() {
+            self.sesion.orden(u);
+        }
+    }
+
+    /// Cancelar: la orden en marcha o, sin orden, lo elegido.
+    pub fn cancelar(&mut self) {
+        if self.sesion.activa().is_some() {
+            self.sesion.escape();
+        } else {
+            self.sesion.seleccion.clear();
+        }
+    }
+
+    /// Hace que el panel de propiedades destaque un momento.
+    pub fn ver_propiedades(&mut self) {
+        self.aviso_panel = Some(Instant::now());
+    }
+
+    /// Si algo se esta animando (y hay que seguir pintando).
+    pub fn animando(&self) -> bool {
+        self.aviso_panel
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(1600))
     }
 
     // ----------------------------------------------------------- acciones
@@ -418,16 +627,18 @@ impl Mesa {
     pub fn pintar(&mut self, p: &Pintor, w: f32, h: f32, e: f32) -> Vec<Zona> {
         let d = self.disp(w, h, e);
         self.contar_capas();
-        if !self.encuadrado && (self.hay_plano || !self.plano.esperando()) {
-            self.encuadrar(w, h, e);
-        }
+        self.encuadrar_si_falta(w, h, e);
         let mut zonas = Vec::new();
         // Lo que hay encima del plano, recortado a su zona.
-        let cursor_dibujo = self.cursor.filter(|(x, y)| ui::dentro(&d.dibujo, *x, *y));
+        let cursor_dibujo = self
+            .cursor
+            .filter(|(x, y)| ui::dentro(&d.dibujo, *x, *y) && !self.en_emergente(*x, *y));
         let ajustado = cursor_dibujo.map(|(x, y)| {
             let crudo = self.a_plano(x, y, w, h);
             let radio = self.radio_enganche(e);
-            let sin = self.sesion.pide_objetos() && self.sesion.activa().is_some();
+            // Eligiendo objetos (tambien sin orden) no hay enganche que ensenar:
+            // el clic no lo usaria.
+            let sin = self.sesion.pide_objetos();
             // Si el cursor y lo demas siguen igual, el enganche de antes.
             let clave = ClaveAjuste::de(&self.sesion, crudo, radio, sin);
             let sesion = &self.sesion;
@@ -440,6 +651,7 @@ impl Mesa {
             })
         });
         self.enganche = ajustado.and_then(|a| a.1);
+        let presel = self.preseleccion(cursor_dibujo, w, h, e);
         let indice = self.sesion.dibujo.indice();
         let version = self.sesion.dibujo.version();
         self.resalte
@@ -473,15 +685,36 @@ impl Mesa {
             }
             self.pintar_pendiente(p, &a_pantalla, e, &vista);
             self.pintar_seleccion(p, &a_pantalla, e, &vista);
+            if let Some(en) = presel.and_then(|h| indice.de_handle(h)) {
+                // Lo que se elegiria con un clic, mas grueso y claro.
+                for f in en.formas.iter().take(TOPE_PRESELECCION) {
+                    trazar_forma(
+                        p,
+                        f,
+                        &a_pantalla,
+                        self.camara.px,
+                        3.0 * e,
+                        tema::PRESELECCION,
+                    );
+                }
+            }
+            let mut etiquetas = 0;
             if let Some((q, _)) = ajustado {
                 let previa = self.sesion.previa(q);
-                for f in &previa.formas {
+                // Solo lo que cae en la vista (con mucho elegido, la previa
+                // trae miles de formas).
+                for f in previa
+                    .formas
+                    .iter()
+                    .filter(|f| cad_nucleo::geo::se_tocan(&f.caja(), &vista))
+                {
                     trazar_forma(p, f, &a_pantalla, self.camara.px, 1.5 * e, tema::PREVIA);
                 }
                 for (a, b) in &previa.guias {
                     let (pa, pb) = (a_pantalla(*a), a_pantalla(*b));
                     p.polilinea_discontinua(&[pa, pb], 1.0 * e, tema::rgba(0xA1, 0xA1, 0xA8, 0.8));
                 }
+                etiquetas = previa.etiquetas.len();
                 for (q, t) in &previa.etiquetas {
                     let (x, y) = a_pantalla(*q);
                     p.texto_con_fondo(
@@ -518,14 +751,114 @@ impl Mesa {
             }
             if let Some((x, y)) = cursor_dibujo {
                 pintar_cursor(p, x, y, &d.dibujo, e, self.sesion.pide_objetos());
+                if self.entrada_dinamica && self.abajo.is_none_or(|a| !a.arrastra) {
+                    self.pintar_entrada_dinamica(p, x, y, e, etiquetas, &d.dibujo);
+                }
             }
         });
 
         self.pintar_cinta(p, &d, e, &mut zonas);
+        {
+            let s = &self.sesion;
+            self.resumen
+                .o_calcular(s.dibujo.version(), &s.seleccion, || {
+                    props::resumir(&s.dibujo, &s.seleccion)
+                });
+        }
         self.pintar_panel(p, &d, e, &mut zonas);
         self.pintar_ordenes(p, &d, e);
         self.pintar_estado(p, &d, e, ajustado.map(|a| a.0), &mut zonas);
+        self.pintar_emergente(p, &d, w, h, e, &mut zonas);
         zonas
+    }
+
+    /// **Lo que hay bajo el cursor** si un clic lo elegiria (sin orden, o
+    /// con una que pide objetos), recordado mientras no se mueva nada.
+    fn preseleccion(
+        &mut self,
+        cursor: Option<(f32, f32)>,
+        w: f32,
+        h: f32,
+        e: f32,
+    ) -> Option<Handle> {
+        let (x, y) = cursor?;
+        if !self.sesion.pide_objetos()
+            || self.mano.is_some()
+            || self.abajo.is_some_and(|a| a.arrastra)
+            || self.emergente.is_some()
+        {
+            return None;
+        }
+        let clave = (x, y, self.sesion.dibujo.version(), self.camara);
+        let p = self.a_plano(x, y, w, h);
+        let tol = self.camara.px * (tema::CAJA_CURSOR * e) as f64 / 2.0 + self.camara.px;
+        let dib = &self.sesion.dibujo;
+        self.presel.o_calcular(clave, || {
+            cad_nucleo::seleccion::elegir(&dib.indice(), p, tol)
+        })
+    }
+
+    /// **La entrada dinamica** (F12): lo que pide la orden y lo que se va
+    /// escribiendo, junto al cursor (debajo de la distancia y el angulo).
+    fn pintar_entrada_dinamica(
+        &self,
+        p: &Pintor,
+        x: f32,
+        y: f32,
+        e: f32,
+        etiquetas: usize,
+        zona: &RectF,
+    ) {
+        let escrito = &self.linea.escrito;
+        if self.sesion.activa().is_none() && escrito.is_empty() {
+            return;
+        }
+        let indicacion = self.sesion.indicacion();
+        let tam = 11.5 * e;
+        let (iw, ih) = p.medir_texto(&indicacion, tam);
+        let (ew, _) = p.medir_texto(escrito, tam);
+        let ancho_escrito = ew.max(36.0 * e) + 10.0 * e;
+        let ancho = iw + ancho_escrito + 22.0 * e;
+        let alto = ih + 8.0 * e;
+        let bajo = if etiquetas > 0 { 44.0 } else { 20.0 } * e;
+        let mut bx = x + 18.0 * e;
+        let mut by = y + bajo;
+        // Que no se salga del plano.
+        if bx + ancho > zona.x + zona.ancho {
+            bx = (x - 18.0 * e - ancho).max(zona.x);
+        }
+        if by + alto > zona.y + zona.alto {
+            by = y - bajo - alto;
+        }
+        p.rellenar_redondeado(
+            rect(bx, by, ancho, alto),
+            5.0 * e,
+            tema::rgba(0x0E, 0x0E, 0x10, 0.88),
+        );
+        p.texto(
+            &indicacion,
+            bx + 7.0 * e,
+            by + 4.0 * e,
+            tam,
+            tema::TEXTO_SUAVE,
+        );
+        let caja = rect(
+            bx + iw + 14.0 * e,
+            by + 2.0 * e,
+            ancho_escrito,
+            alto - 4.0 * e,
+        );
+        p.rellenar_redondeado(caja, 3.0 * e, tema::PANEL_ALTO);
+        p.texto(escrito, caja.x + 5.0 * e, by + 4.0 * e, tam, tema::TEXTO);
+        p.rellenar(
+            rect(
+                caja.x + 5.0 * e + ew + 1.0 * e,
+                by + 5.0 * e,
+                1.2 * e,
+                ih - 2.0 * e,
+            ),
+            tema::TEXTO,
+        );
     }
 
     /// Lo elegido que se ve en `vista`: lo mayor primero y, con mucho
@@ -574,23 +907,29 @@ impl Mesa {
         if self.sesion.seleccion.is_empty() {
             return;
         }
-        const TOPE_FORMAS: usize = 3000;
+        // Con la previa de mover o girar en pantalla, menos: las dos juntas
+        // son lo que mas cuesta pintar con mucho elegido.
+        let tope_formas: usize = if self.sesion.activa().is_some() && !self.sesion.pide_objetos() {
+            1500
+        } else {
+            3000
+        };
         let ind = self.sesion.dibujo.indice();
         // Con mucho elegido, lo que en pantalla no llega a dos pixeles no se
         // resalta (el recuadro de todo dice que esta elegido).
-        let minimo = if self.sesion.seleccion.len() > TOPE_FORMAS {
+        let minimo = if self.sesion.seleccion.len() > tope_formas {
             self.camara.px * 2.0
         } else {
             0.0
         };
-        let (cuales, mut quedan) = self.resalte.visibles(vista, minimo, TOPE_FORMAS);
+        let (cuales, mut quedan) = self.resalte.visibles(vista, minimo, tope_formas);
         let mut trazadas = 0;
         for k in cuales {
             let Some(en) = ind.entradas.get(k as usize) else {
                 continue;
             };
             trazadas += en.formas.len().max(1);
-            if trazadas > TOPE_FORMAS {
+            if trazadas > tope_formas {
                 quedan = true;
                 break;
             }
@@ -811,7 +1150,13 @@ impl Mesa {
         // La mitad de arriba para las capas.
         let limite = r.y + r.alto * 0.5;
         let capas: Vec<_> = dib.doc.layers.iter().collect();
-        let caben = (((limite - y) / alto_fila).floor().max(1.0)) as usize;
+        // Si no caben todas, sitio abajo para decir cuantas hay.
+        let pie = if capas.len() as f32 * alto_fila > limite - y {
+            18.0 * e
+        } else {
+            0.0
+        };
+        let caben = (((limite - y - pie) / alto_fila).floor().max(1.0)) as usize;
         self.capas_caben.set(caben);
         let desde = self.capas_desde.min(capas.len().saturating_sub(caben));
         let y_lista = y;
@@ -965,11 +1310,22 @@ impl Mesa {
             rect(r.x + 12.0 * e, y - 8.0 * e, r.ancho - 24.0 * e, 1.0),
             tema::BORDE,
         );
+        // Tras «Propiedades» en el menu, el titulo destaca un momento.
+        let destaca = self
+            .aviso_panel
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
+        if destaca {
+            p.rellenar_redondeado(
+                rect(x0 - 6.0 * e, y - 4.0 * e, ancho + 12.0 * e, 24.0 * e),
+                5.0 * e,
+                tema::ACENTO_SUAVE,
+            );
+        }
         p.texto("Propiedades", x0, y, 14.0 * e, tema::TEXTO);
         y += 26.0 * e;
         let sel = &self.sesion.seleccion;
-        let filas = propiedades(&self.sesion);
-        if sel.is_empty() {
+        let resumen = self.resumen.valor().filter(|_| !sel.is_empty());
+        let Some(rs) = resumen else {
             p.texto_linea(
                 "Nada elegido. Haz clic en un objeto o arrastra un recuadro (a la derecha: ventana; a la izquierda: captura).",
                 x0,
@@ -979,43 +1335,218 @@ impl Mesa {
                 tema::TEXTO_APAGADO,
             );
             y += 52.0 * e;
-        } else {
-            for (k, v) in filas {
-                p.texto(&k, x0, y, 11.5 * e, tema::TEXTO_SUAVE);
-                p.texto(
-                    &ui::recortar(p, &v, 12.0 * e, ancho - 96.0 * e),
-                    x0 + 96.0 * e,
-                    y,
-                    12.0 * e,
-                    tema::TEXTO,
-                );
-                y += 20.0 * e;
-            }
-            y += 6.0 * e;
-            let b = rect(x0, y, ancho, 28.0 * e);
-            ui::boton(
-                p,
-                zonas,
-                b,
-                &format!(
-                    "Pasar a la capa «{}»",
-                    ui::recortar(p, &actual, 12.0 * e, ancho - 140.0 * e)
-                ),
-                12.0 * e,
-                Estilo::Plano,
-                encima,
-                Accion::PasarACapa(actual.clone()),
-                "Cambiar la capa de lo elegido a la actual",
+            self.boton_metrado(p, r, x0, ancho, y, e, zonas);
+            return;
+        };
+        // Cuantos, de que tipo, y elegir los parecidos.
+        let tipos = match rs.por_tipo.as_slice() {
+            [(t, _)] => t.to_string(),
+            v => v
+                .iter()
+                .take(3)
+                .map(|(t, n)| format!("{n} {t}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        p.texto(
+            &format!(
+                "{} elegido{}",
+                rs.cuantos,
+                if rs.cuantos == 1 { "" } else { "s" }
+            ),
+            x0,
+            y,
+            12.5 * e,
+            tema::ACENTO,
+        );
+        let bs = rect(x0 + ancho - 92.0 * e, y - 3.0 * e, 92.0 * e, 22.0 * e);
+        ui::boton(
+            p,
+            zonas,
+            bs,
+            "Similares",
+            11.5 * e,
+            Estilo::Elegido,
+            encima,
+            Accion::Orden(Id::Otra("SELECCIONARSIMILAR")),
+            "Seleccionar similares: todo lo del mismo tipo y capa (SS)",
+        );
+        y += 20.0 * e;
+        p.texto(
+            &ui::recortar(p, &tipos, 11.0 * e, ancho),
+            x0,
+            y,
+            11.0 * e,
+            tema::TEXTO_SUAVE,
+        );
+        y += 22.0 * e;
+        // Las que se cambian con una lista.
+        let varios = "*varios*".to_string();
+        let filas: [(Campo, &str, String, Option<Color>); 4] = [
+            (
+                Campo::Capa,
+                "Capa",
+                match &rs.capa {
+                    Some(Comun::Uno(c)) => c.clone(),
+                    _ => varios.clone(),
+                },
+                match &rs.capa {
+                    Some(Comun::Uno(c)) => self
+                        .sesion
+                        .dibujo
+                        .doc
+                        .layers
+                        .get(c)
+                        .map(|l| color_cad(&l.color)),
+                    _ => None,
+                },
+            ),
+            (
+                Campo::Color,
+                "Color",
+                match &rs.color {
+                    Some(Comun::Uno(c)) => props::texto_de_color(c),
+                    _ => varios.clone(),
+                },
+                match &rs.color {
+                    Some(Comun::Uno(c @ (ColorCad::Index(_) | ColorCad::Rgb { .. }))) => {
+                        Some(color_cad(c))
+                    }
+                    _ => None,
+                },
+            ),
+            (
+                Campo::TipoLinea,
+                "Tipo de línea",
+                match &rs.tipo_linea {
+                    Some(Comun::Uno(t)) => props::texto_de_tipo_linea(t),
+                    _ => varios.clone(),
+                },
+                None,
+            ),
+            (
+                Campo::Grosor,
+                "Grosor",
+                match &rs.grosor {
+                    Some(Comun::Uno(g)) => props::texto_de_grosor(g),
+                    _ => varios.clone(),
+                },
+                None,
+            ),
+        ];
+        let col_valor = x0 + 92.0 * e;
+        for (campo, nombre, valor, muestra) in filas {
+            let fila = rect(
+                col_valor - 6.0 * e,
+                y - 3.0 * e,
+                x0 + ancho - col_valor + 6.0 * e,
+                22.0 * e,
             );
-            y += 34.0 * e;
+            let abierta =
+                matches!(&self.emergente, Some(Emergente::Lista { campo: c, .. }) if *c == campo);
+            if abierta {
+                p.rellenar_redondeado(fila, 5.0 * e, tema::ACENTO_SUAVE);
+            } else if encima.is_some_and(|(cx, cy)| ui::dentro(&fila, cx, cy)) {
+                p.rellenar_redondeado(fila, 5.0 * e, tema::PANEL_ALTO);
+            } else {
+                p.trazar(fila, 1.0, tema::BORDE);
+            }
+            p.texto(nombre, x0, y, 11.5 * e, tema::TEXTO_SUAVE);
+            let mut xv = col_valor;
+            if let Some(c) = muestra {
+                p.rellenar_redondeado(rect(xv, y + 3.0 * e, 10.0 * e, 10.0 * e), 2.0 * e, c);
+                xv += 15.0 * e;
+            }
+            p.texto(
+                &ui::recortar(p, &valor, 12.0 * e, x0 + ancho - xv - 18.0 * e),
+                xv,
+                y,
+                12.0 * e,
+                tema::TEXTO,
+            );
+            // La flechita de la lista, trazada (no todas las letras la tienen).
+            let (fx, fy) = (x0 + ancho - 10.0 * e, y + 8.0 * e);
+            p.polilinea(
+                &[
+                    (fx - 4.0 * e, fy - 2.0 * e),
+                    (fx, fy + 2.0 * e),
+                    (fx + 4.0 * e, fy - 2.0 * e),
+                ],
+                1.3 * e,
+                tema::TEXTO_SUAVE,
+            );
+            zonas.push(Zona {
+                r: fila,
+                accion: Accion::Desplegar(campo, fila.y),
+                ayuda: format!("Cambiar {} de lo elegido", nombre.to_lowercase()),
+            });
+            y += 25.0 * e;
         }
+        // Lo que mide.
+        let mut medidas: Vec<(String, String)> = Vec::new();
+        if sel.len() == 1 {
+            medidas = propiedades(&self.sesion)
+                .into_iter()
+                .filter(|(k, _)| k != "Tipo" && k != "Capa")
+                .collect();
+        } else {
+            if rs.largo > 0.0 {
+                medidas.push(("Longitud".into(), format!("{:.2}", rs.largo)));
+            }
+            if rs.area > 0.0 {
+                medidas.push(("Area".into(), format!("{:.2}", rs.area)));
+            }
+        }
+        for (k, v) in medidas.iter().take(4) {
+            p.texto(k, x0, y, 11.5 * e, tema::TEXTO_SUAVE);
+            p.texto(
+                &ui::recortar(p, v, 12.0 * e, ancho - 92.0 * e),
+                col_valor,
+                y,
+                12.0 * e,
+                tema::TEXTO,
+            );
+            y += 20.0 * e;
+        }
+        y += 4.0 * e;
+        let b = rect(x0, y, ancho, 26.0 * e);
+        ui::boton(
+            p,
+            zonas,
+            b,
+            &format!(
+                "Pasar a la capa actual «{}»",
+                ui::recortar(p, &actual, 12.0 * e, ancho - 170.0 * e)
+            ),
+            12.0 * e,
+            Estilo::Plano,
+            encima,
+            Accion::PasarACapa(actual.clone()),
+            "Cambiar la capa de lo elegido a la actual",
+        );
+        y += 30.0 * e;
+        self.boton_metrado(p, r, x0, ancho, y, e, zonas);
+    }
+
+    /// El boton del metrado, al pie del panel.
+    #[allow(clippy::too_many_arguments)]
+    fn boton_metrado(
+        &self,
+        p: &Pintor,
+        r: RectF,
+        x0: f32,
+        ancho: f32,
+        y: f32,
+        e: f32,
+        zonas: &mut Vec<Zona>,
+    ) {
         let b = rect(
             x0,
             (y + 6.0 * e).min(r.y + r.alto - 36.0 * e),
             ancho,
             30.0 * e,
         );
-        let texto = if sel.is_empty() {
+        let texto = if self.sesion.seleccion.is_empty() {
             "Metrado del plano (CSV)…"
         } else {
             "Metrado de lo elegido (CSV)…"
@@ -1027,10 +1558,278 @@ impl Mesa {
             texto,
             12.0 * e,
             Estilo::Principal,
-            encima,
+            self.cursor,
             Accion::MetradoPlano,
             "Cantidad, longitud y area por capa",
         );
+    }
+
+    /// **Pinta el menu o la lista abiertos**, encima de todo, y deja sus zonas.
+    fn pintar_emergente(
+        &self,
+        p: &Pintor,
+        d: &Disposicion,
+        w: f32,
+        h: f32,
+        e: f32,
+        zonas: &mut Vec<Zona>,
+    ) {
+        self.caja_emergente.set(None);
+        let Some(em) = &self.emergente else {
+            return;
+        };
+        let encima = self.cursor;
+        let tam = 12.0 * e;
+        let alto_fila = 24.0 * e;
+        let fondo = tema::rgba(0x1E, 0x1E, 0x23, 0.98);
+        match em {
+            Emergente::Menu { x, y, items } => {
+                let ancho = items
+                    .iter()
+                    .map(|(t, _)| p.medir_texto(t, tam).0)
+                    .fold(140.0 * e, f32::max)
+                    + 28.0 * e;
+                let alto = items.len() as f32 * alto_fila + 8.0 * e;
+                let bx = (*x + 2.0 * e).min(w - ancho - 4.0 * e).max(0.0);
+                let by = (*y + 2.0 * e).min(h - alto - 4.0 * e).max(0.0);
+                let caja = rect(bx, by, ancho, alto);
+                self.caja_emergente.set(Some(caja));
+                sombra_y_fondo(p, caja, e, fondo);
+                for (i, (t, a)) in items.iter().enumerate() {
+                    let f = rect(
+                        bx + 4.0 * e,
+                        by + 4.0 * e + i as f32 * alto_fila,
+                        ancho - 8.0 * e,
+                        alto_fila,
+                    );
+                    if encima.is_some_and(|(cx, cy)| ui::dentro(&f, cx, cy)) {
+                        p.rellenar_redondeado(f, 4.0 * e, tema::ACENTO);
+                    }
+                    p.texto(t, f.x + 10.0 * e, f.y + 5.0 * e, tam, tema::TEXTO);
+                    zonas.push(Zona {
+                        r: f,
+                        accion: a.clone(),
+                        ayuda: String::new(),
+                    });
+                }
+            }
+            Emergente::Lista {
+                campo: Campo::Color,
+                y,
+                ..
+            } => self.pintar_paleta(p, d, *y, e, zonas),
+            Emergente::Lista { campo, y, desde } => {
+                let items = self.items_de_lista(*campo);
+                let ancho = items
+                    .iter()
+                    .map(|(t, _, _)| p.medir_texto(t, tam).0)
+                    .fold(150.0 * e, f32::max)
+                    + 60.0 * e;
+                let caben = (((d.dibujo.alto - 16.0 * e) / alto_fila).floor() as usize).max(3);
+                let n = items.len().min(caben);
+                let desde = (*desde).min(items.len() - n);
+                let alto = n as f32 * alto_fila + 8.0 * e;
+                let bx = d.panel.x - ancho - 6.0 * e;
+                let by = y
+                    .min(d.dibujo.y + d.dibujo.alto - alto - 4.0 * e)
+                    .max(d.dibujo.y + 4.0 * e);
+                let caja = rect(bx, by, ancho, alto);
+                self.caja_emergente.set(Some(caja));
+                sombra_y_fondo(p, caja, e, fondo);
+                for (i, (t, a, muestra)) in items.iter().skip(desde).take(n).enumerate() {
+                    let f = rect(
+                        bx + 4.0 * e,
+                        by + 4.0 * e + i as f32 * alto_fila,
+                        ancho - 8.0 * e,
+                        alto_fila,
+                    );
+                    if encima.is_some_and(|(cx, cy)| ui::dentro(&f, cx, cy)) {
+                        p.rellenar_redondeado(f, 4.0 * e, tema::ACENTO);
+                    }
+                    let mut xt = f.x + 10.0 * e;
+                    match muestra {
+                        Muestra::Color(c) => {
+                            p.rellenar_redondeado(
+                                rect(xt, f.y + 7.0 * e, 10.0 * e, 10.0 * e),
+                                2.0 * e,
+                                *c,
+                            );
+                            xt += 16.0 * e;
+                        }
+                        Muestra::Grosor(g) => {
+                            let ym = f.y + alto_fila / 2.0;
+                            p.linea((xt, ym), (xt + 26.0 * e, ym), *g * e, tema::TEXTO);
+                            xt += 34.0 * e;
+                        }
+                        Muestra::Nada => {}
+                    }
+                    p.texto(t, xt, f.y + 5.0 * e, tam, tema::TEXTO);
+                    zonas.push(Zona {
+                        r: f,
+                        accion: a.clone(),
+                        ayuda: String::new(),
+                    });
+                }
+                if items.len() > n {
+                    let total = items.len() as f32;
+                    let barra = rect(
+                        bx + ancho - 5.0 * e,
+                        by + 4.0 * e + (alto - 8.0 * e) * desde as f32 / total,
+                        3.0 * e,
+                        ((alto - 8.0 * e) * n as f32 / total).max(10.0 * e),
+                    );
+                    p.rellenar_redondeado(barra, 1.5 * e, tema::TEXTO_APAGADO);
+                }
+            }
+        }
+    }
+
+    /// Lo que ofrece la lista de `campo` (sin el color, que es la paleta).
+    fn items_de_lista(&self, campo: Campo) -> Vec<(String, Accion, Muestra)> {
+        let dib = &self.sesion.dibujo;
+        match campo {
+            Campo::Capa => dib
+                .doc
+                .layers
+                .iter()
+                .map(|l| {
+                    (
+                        l.name.clone(),
+                        Accion::Propiedad(Cambio::Capa(l.name.clone())),
+                        Muestra::Color(color_cad(&l.color)),
+                    )
+                })
+                .collect(),
+            Campo::TipoLinea => std::iter::once("BYLAYER".to_string())
+                .chain(std::iter::once("BYBLOCK".to_string()))
+                .chain(props::tipos_de_linea(dib))
+                .map(|n| {
+                    (
+                        props::texto_de_tipo_linea(&n),
+                        Accion::Propiedad(Cambio::TipoLinea(n)),
+                        Muestra::Nada,
+                    )
+                })
+                .collect(),
+            Campo::Grosor => [
+                LineWeight::ByLayer,
+                LineWeight::ByBlock,
+                LineWeight::Default,
+            ]
+            .into_iter()
+            .map(|g| (g, None))
+            .chain(
+                props::GROSORES
+                    .iter()
+                    .map(|v| (LineWeight::Value(*v), Some(*v))),
+            )
+            .map(|(g, v)| {
+                (
+                    props::texto_de_grosor(&g),
+                    Accion::Propiedad(Cambio::Grosor(g)),
+                    match v {
+                        // De 1 a 6 pixeles, para ver la diferencia.
+                        Some(v) => Muestra::Grosor((v as f32 / 35.0).clamp(1.0, 6.0)),
+                        None => Muestra::Nada,
+                    },
+                )
+            })
+            .collect(),
+            Campo::Color => Vec::new(),
+        }
+    }
+
+    /// **La paleta de colores ACI**: PorCapa, PorBloque, los nueve de
+    /// siempre, los 240 tonos (24 columnas de 10) y los grises.
+    fn pintar_paleta(&self, p: &Pintor, d: &Disposicion, y: f32, e: f32, zonas: &mut Vec<Zona>) {
+        let lado = 13.0 * e;
+        let paso = lado + 2.0 * e;
+        let margen = 8.0 * e;
+        let ancho = 24.0 * paso + 2.0 * margen;
+        let alto = 2.0 * margen
+            + 26.0 * e
+            + (lado * 1.4 + 6.0 * e)
+            + 10.0 * paso
+            + 6.0 * e
+            + paso
+            + 4.0 * e;
+        let bx = d.panel.x - ancho - 6.0 * e;
+        let by = y
+            .min(d.dibujo.y + d.dibujo.alto - alto - 4.0 * e)
+            .max(d.dibujo.y + 4.0 * e);
+        let caja = rect(bx, by, ancho, alto);
+        self.caja_emergente.set(Some(caja));
+        sombra_y_fondo(p, caja, e, tema::rgba(0x1E, 0x1E, 0x23, 0.98));
+        let encima = self.cursor;
+        let celda = |r: RectF, i: Option<u8>, c: ColorCad, zonas: &mut Vec<Zona>| {
+            if let Some(i) = i {
+                let (cr, cg, cb) = props::aci_rgb(i);
+                p.rellenar(r, tema::rgb(cr, cg, cb));
+            }
+            if encima.is_some_and(|(cx, cy)| ui::dentro(&r, cx, cy)) {
+                p.trazar(
+                    rect(
+                        r.x - 1.0 * e,
+                        r.y - 1.0 * e,
+                        r.ancho + 2.0 * e,
+                        r.alto + 2.0 * e,
+                    ),
+                    1.5 * e,
+                    tema::TEXTO,
+                );
+            }
+            zonas.push(Zona {
+                r,
+                ayuda: props::texto_de_color(&c),
+                accion: Accion::Propiedad(Cambio::Color(c)),
+            });
+        };
+        let mut yy = by + margen;
+        // PorCapa y PorBloque.
+        let mut xx = bx + margen;
+        for (t, c) in [
+            ("PorCapa", ColorCad::ByLayer),
+            ("PorBloque", ColorCad::ByBlock),
+        ] {
+            let tw = p.medir_texto(t, 11.5 * e).0 + 18.0 * e;
+            let r = rect(xx, yy, tw, 22.0 * e);
+            p.rellenar_redondeado(r, 4.0 * e, tema::PANEL_ALTO);
+            p.texto(t, r.x + 9.0 * e, r.y + 4.0 * e, 11.5 * e, tema::TEXTO);
+            celda(r, None, c, zonas);
+            xx += tw + 6.0 * e;
+        }
+        yy += 26.0 * e;
+        // Los nueve de siempre, mas grandes.
+        let grande = lado * 1.4;
+        for i in 1..=9u8 {
+            let r = rect(
+                bx + margen + (i - 1) as f32 * (grande + 4.0 * e),
+                yy,
+                grande,
+                grande,
+            );
+            celda(r, Some(i), ColorCad::Index(i), zonas);
+        }
+        yy += grande + 6.0 * e;
+        // Los tonos: cada columna un tono, de arriba abajo sus diez variantes.
+        for col in 0..24u8 {
+            for fila in 0..10u8 {
+                let i = 10 + col * 10 + fila;
+                let r = rect(
+                    bx + margen + col as f32 * paso,
+                    yy + fila as f32 * paso,
+                    lado,
+                    lado,
+                );
+                celda(r, Some(i), ColorCad::Index(i), zonas);
+            }
+        }
+        yy += 10.0 * paso + 6.0 * e;
+        for k in 0..6u8 {
+            let i = 250 + k;
+            let r = rect(bx + margen + k as f32 * paso, yy, lado, lado);
+            celda(r, Some(i), ColorCad::Index(i), zonas);
+        }
     }
 
     fn pintar_ordenes(&self, p: &Pintor, d: &Disposicion, e: f32) {
@@ -1069,27 +1868,33 @@ impl Mesa {
         p.texto(&indicacion, caja.x + 10.0 * e, ty, 13.0 * e, tema::ACENTO);
         let (iw, _) = p.medir_texto(&indicacion, 13.0 * e);
         let xe = caja.x + 10.0 * e + iw + 8.0 * e;
-        p.texto(&self.escrito, xe, ty, 13.0 * e, tema::TEXTO);
+        p.texto(&self.linea.escrito, xe, ty, 13.0 * e, tema::TEXTO);
         let (ew, eh) = p.medir_texto(
-            if self.escrito.is_empty() {
+            if self.linea.escrito.is_empty() {
                 "M"
             } else {
-                &self.escrito
+                &self.linea.escrito
             },
             13.0 * e,
         );
-        let xc = xe + if self.escrito.is_empty() { 0.0 } else { ew } + 1.0 * e;
+        let xc =
+            xe + if self.linea.escrito.is_empty() {
+                0.0
+            } else {
+                ew
+            } + 1.0 * e;
         p.rellenar(rect(xc, ty + 1.0 * e, 1.5 * e, eh), tema::TEXTO);
         // Sin orden: lo que se puede querer decir.
-        if self.sesion.activa().is_none() && !self.escrito.is_empty() {
-            let s: Vec<String> = ordenes::sugerencias(&self.escrito)
+        if self.sesion.activa().is_none() && !self.linea.escrito.is_empty() {
+            let s: Vec<String> = linea::ordenes_para(&self.linea.escrito)
                 .into_iter()
                 .take(6)
+                .filter_map(|n| ordenes::buscar(&n))
                 .map(|o| format!("{} ({})", o.nombre, o.alias.first().copied().unwrap_or("")))
                 .collect();
             if !s.is_empty() {
                 p.texto(
-                    &format!("→ {}", s.join("   ")),
+                    &format!("» {}    Tab completa", s.join("   ")),
                     xc + 18.0 * e,
                     ty + 1.0 * e,
                     11.5 * e,
@@ -1119,8 +1924,9 @@ impl Mesa {
             2 => "pies",
             _ => "unid.",
         };
+        let dec = crate::encima::decimales_para(self.camara.px, self.sesion.ajustes.decimales);
         let coords = match punto {
-            Some(q) => format!("{:.2}, {:.2}  {unidad}", q[0], q[1]),
+            Some(q) => format!("{:.dec$}, {:.dec$}  {unidad}", q[0], q[1]),
             None => unidad.to_string(),
         };
         p.texto(&coords, 12.0 * e, r.y + 6.0 * e, tam, tema::TEXTO_SUAVE);
@@ -1206,7 +2012,7 @@ impl Mesa {
         }
         let n = self.sesion.seleccion.len();
         if n > 0 {
-            let t = format!("{n} elegidos");
+            let t = format!("{n} elegido{}", if n == 1 { "" } else { "s" });
             let (tw, _) = p.medir_texto(&t, tam);
             p.texto(
                 &t,
@@ -1407,6 +2213,41 @@ impl Mesa {
     }
 }
 
+/// La muestra junto a cada valor de una lista.
+enum Muestra {
+    Nada,
+    Color(Color),
+    /// El grosor de la raya, en pixeles a 100 %.
+    Grosor(f32),
+}
+
+/// El color de pantalla de un color del dibujo (el 7 y lo «por capa», blanco).
+fn color_cad(c: &ColorCad) -> Color {
+    match c {
+        ColorCad::Index(i) => {
+            let (r, g, b) = props::aci_rgb(*i);
+            tema::rgb(r, g, b)
+        }
+        ColorCad::Rgb { r, g, b } => tema::rgb(*r, *g, *b),
+        _ => tema::TEXTO,
+    }
+}
+
+/// El fondo de un menu o una lista, con su sombra y su borde.
+fn sombra_y_fondo(p: &Pintor, r: RectF, e: f32, fondo: Color) {
+    p.rellenar_redondeado(
+        rect(r.x + 2.0 * e, r.y + 4.0 * e, r.ancho, r.alto),
+        8.0 * e,
+        tema::rgba(0, 0, 0, 0.35),
+    );
+    p.rellenar_redondeado(r, 8.0 * e, fondo);
+    p.trazar(r, 1.0, tema::BORDE);
+}
+
+/// Cuantas formas de lo que esta bajo el cursor se resaltan como mucho (un
+/// sombreado grande tiene miles).
+const TOPE_PRESELECCION: usize = 2000;
+
 /// La caja de un modelo ya convertido, en coordenadas absolutas.
 pub fn caja_de_modelo(m: &pixpin_cad::modelo::Modelo) -> [f64; 4] {
     let c = m.caja_util();
@@ -1539,13 +2380,19 @@ fn trazar_forma(
     grosor: f32,
     color: Color,
 ) {
+    // Sin geometrias de Direct2D (crear una por arco en cada fotograma era
+    // lo caro con mucho elegido): el circulo es una elipse y el arco, rayas
+    // sueltas, que Direct2D junta.
     match *f {
         Forma::Segmento { a, b } => p.linea(a_pantalla(a), a_pantalla(b), grosor, color),
-        Forma::Arco { r, .. } | Forma::Circulo { r, .. } => {
+        Forma::Circulo { c, r } => p.anillo(a_pantalla(c), (r / px) as f32, grosor, color),
+        Forma::Arco { r, .. } => {
             // Tantos tramos como pida el tamano en pantalla.
-            let n = ((r / px).sqrt() * 4.0).clamp(12.0, 160.0) as usize;
+            let n = ((r / px).sqrt() * 4.0).clamp(4.0, 160.0) as usize;
             let pts: Vec<(f32, f32)> = f.muestras(n).into_iter().map(a_pantalla).collect();
-            p.polilinea(&pts, grosor, color);
+            for w in pts.windows(2) {
+                p.linea(w[0], w[1], grosor, color);
+            }
         }
     }
 }

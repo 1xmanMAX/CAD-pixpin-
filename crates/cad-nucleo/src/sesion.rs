@@ -125,6 +125,11 @@ impl Sesion {
         self.activa
     }
 
+    /// La ultima orden que se empezo (la que repite Enter en vacio).
+    pub fn ultima(&self) -> Option<Id> {
+        self.ultima
+    }
+
     fn decir(&mut self, s: impl Into<String>) {
         self.registro.push(s.into());
         if self.registro.len() > 500 {
@@ -324,6 +329,10 @@ impl Sesion {
 
     /// Si la orden esta pidiendo objetos (el recuadro elige en vez de ser un punto).
     pub fn pide_objetos(&self) -> bool {
+        // Con un pinzamiento tomado se pide su punto nuevo (con enganches).
+        if self.pinzamiento.is_some() {
+            return false;
+        }
         match self.activa {
             None => true,
             Some(_) if self.herr.is_some() => {
@@ -540,6 +549,15 @@ impl Sesion {
     /// **Lo que se escribe** en la linea de ordenes y Enter. Sin orden, el
     /// nombre de una; vacio, repite la ultima.
     pub fn escribir(&mut self, texto: &str) {
+        // Con un pinzamiento tomado: su punto nuevo escrito, o Enter lo suelta.
+        if self.pinzamiento.is_some() {
+            match entrada::interpretar(texto, self.base()) {
+                Entrada::Punto(p) => self.clic(p, 0.0),
+                Entrada::Vacio => self.pinzamiento = None,
+                _ => self.decir("Escriba el punto nuevo (x,y o @dx,dy) o Enter para soltarlo"),
+            }
+            return;
+        }
         let Some(id) = self.activa else {
             if texto.trim().is_empty() {
                 if let Some(u) = self.ultima {
@@ -1583,6 +1601,16 @@ impl Sesion {
                 vec![esp::polilinea(&q, true)]
             }
             Id::Distancia if n == 1 => vec![esp::linea(pts[0], c)],
+            // El desfase hacia el lado del cursor.
+            Id::Desfase if !p.objetos.is_empty() => {
+                let d = p.numeros.first().copied().unwrap_or(self.ajustes.desfase);
+                p.objetos
+                    .last()
+                    .and_then(|(h, _)| self.dibujo.entidad(*h))
+                    .and_then(|e| op::desfase(e, d, c))
+                    .into_iter()
+                    .collect()
+            }
             Id::Mover | Id::Copiar | Id::Girar | Id::Escalar | Id::Simetria
                 if p.elegidos && n >= 1 =>
             {
@@ -1671,8 +1699,9 @@ impl Sesion {
 }
 
 /// Cuantas formas pinta como mucho la previa de lo elegido (pasado eso, la
-/// caja de todo).
-const FORMAS_PREVIA: usize = 5000;
+/// caja de todo). Con 5000 la previa de mover un plano entero se pintaba a
+/// tirones: en pantalla no se distingue mas.
+const FORMAS_PREVIA: usize = 2000;
 
 /// Cuantas entidades que no estan en el indice copia como mucho la previa.
 const SUELTAS_PREVIA: usize = 200;
@@ -1874,11 +1903,22 @@ mod pruebas {
         s.clic([50.0, 0.0], 2.0);
         assert_eq!(s.seleccion.len(), 1);
         assert!(s.tomar_pinzamiento([100.0, 0.0], 2.0));
+        // El punto nuevo del pinzamiento es un punto (se engancha), no un objeto.
+        assert!(!s.pide_objetos());
         s.clic([100.0, 50.0], 2.0);
+        assert!(s.pide_objetos());
+        // Escrito con @ desde el pinzamiento; Enter con uno tomado lo suelta
+        // sin repetir la ultima orden.
+        assert!(s.tomar_pinzamiento([100.0, 50.0], 2.0));
+        s.escribir("@0,10");
+        assert!(s.tomar_pinzamiento([100.0, 60.0], 2.0));
+        s.escribir("");
+        assert_eq!(s.activa(), None);
+        assert!(s.pide_objetos());
         let EntityType::Line(l) = s.dibujo.doc.model_space_entities().next().unwrap() else {
             panic!()
         };
-        assert_eq!(l.end.y, 50.0);
+        assert_eq!(l.end.y, 60.0);
     }
 
     #[test]
@@ -1968,6 +2008,25 @@ mod pruebas {
         s.elegir_todo();
         s.escribir("m");
         assert!(s.previa([5.0, 5.0]).formas.is_empty());
+    }
+
+    #[test]
+    fn la_previa_del_desfase_es_lo_que_queda() {
+        let mut s = sesion();
+        s.escribir("l");
+        s.escribir("0,0");
+        s.escribir("100,0");
+        s.escribir("");
+        s.escribir("o");
+        s.escribir("10");
+        // Antes de elegir la linea, nada.
+        assert!(s.previa([50.0, 20.0]).formas.is_empty());
+        s.clic([50.0, 0.0], 1.0);
+        let v = s.previa([50.0, 20.0]);
+        assert_eq!(v.formas.len(), 1);
+        assert_eq!(v.formas[0].caja(), [0.0, 10.0, 100.0, 10.0]);
+        s.clic([50.0, 20.0], 1.0);
+        assert_eq!(cuantas(&s), 2);
     }
 
     #[test]

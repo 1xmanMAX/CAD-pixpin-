@@ -23,6 +23,9 @@ mod documentos;
 mod encima;
 #[cfg(windows)]
 mod inicio;
+// La linea de ordenes (historial y Tab), portable.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod linea;
 #[cfg(windows)]
 mod mesa;
 #[cfg(windows)]

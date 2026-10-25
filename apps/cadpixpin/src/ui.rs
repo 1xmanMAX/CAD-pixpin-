@@ -42,6 +42,25 @@ pub enum Accion {
     MetradoPlano,
     Alternar(Interruptor),
     Enganche(Tipo),
+    /// Abrir la lista de una propiedad de lo elegido (a la altura `y` del panel).
+    Desplegar(Campo, f32),
+    /// Cambiar una propiedad de lo elegido.
+    Propiedad(cad_nucleo::propiedades::Cambio),
+    /// Repetir la ultima orden (menu del boton derecho).
+    Repetir,
+    /// Cancelar la orden o, sin orden, soltar lo elegido.
+    Cancelar,
+    /// Llamar la atencion sobre el panel de propiedades.
+    VerPropiedades,
+}
+
+/// Las propiedades que se cambian desde el panel con una lista.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Campo {
+    Capa,
+    Color,
+    TipoLinea,
+    Grosor,
 }
 
 /// Los interruptores de la barra de estado.
