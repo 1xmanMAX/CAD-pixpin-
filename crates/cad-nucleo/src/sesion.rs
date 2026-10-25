@@ -723,8 +723,12 @@ impl Sesion {
                 }
             }
             _ if self.pide_objetos() => {
+                // Con un conjunto: un recuadro sobre 200 000 objetos no puede
+                // ser cuadratico.
+                let mut ya: std::collections::HashSet<Handle> =
+                    self.seleccion.iter().copied().collect();
                 for h in hs {
-                    if !self.seleccion.contains(&h) {
+                    if ya.insert(h) {
                         self.seleccion.push(h);
                     }
                 }
